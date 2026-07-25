@@ -87,12 +87,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          BUILD_ID="$(gcloud builds triggers run "${TRIGGER_NAME}" \
+          set +e
+          gcloud builds triggers run "${TRIGGER_NAME}" \
             --project="${PROJECT_ID}" \
             --region="${REGION}" \
             --sha="${PRIVATE_COMMIT}" \
             --quiet \
-            --format='value(metadata.build.id)')"
+            --format=json > evidence/trigger-run.json 2> evidence/trigger-run.stderr
+          trigger_rc=$?
+          set -e
+
+          if [[ ${trigger_rc} -ne 0 ]]; then
+            cat evidence/trigger-run.stderr >&2
+            exit ${trigger_rc}
+          fi
+
+          BUILD_ID="$(jq -r '.metadata.build.id // .metadata.buildId // .id // empty' evidence/trigger-run.json)"
           test -n "${BUILD_ID}"
           echo "BUILD_ID=${BUILD_ID}" >> "${GITHUB_ENV}"
 
@@ -148,5 +158,7 @@ jobs:
             evidence/android-v060-cloud-build.json
             evidence/build.json
             evidence/trigger.json
+            evidence/trigger-run.json
+            evidence/trigger-run.stderr
           if-no-files-found: warn
           retention-days: 1
