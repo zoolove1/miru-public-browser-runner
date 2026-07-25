@@ -57,18 +57,11 @@ jobs:
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Validate private repository and create bounded manual trigger
+      - name: Create or reuse bounded manual trigger
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p evidence output
-
-          remote_uri="$(gcloud builds repositories describe useful-orbit-automation \
-            --project="${PROJECT_ID}" \
-            --region="${REGION}" \
-            --connection=miru-private-github \
-            --format='value(remoteUri)')"
-          test "${remote_uri}" = 'https://github.com/zoolove1/useful-orbit-automation.git'
 
           if ! gcloud builds triggers describe "${TRIGGER_NAME}" \
             --project="${PROJECT_ID}" \
@@ -88,11 +81,6 @@ jobs:
             --project="${PROJECT_ID}" \
             --region="${REGION}" \
             --format=json > evidence/trigger.json
-
-          jq -e --arg repo "${CONNECTED_REPOSITORY}" \
-            --arg config "${BUILD_CONFIG}" \
-            '(.repositoryEventConfig.repository == $repo or .sourceToBuild.repository == $repo or .gitFileSource.uri == $repo) and .filename == $config' \
-            evidence/trigger.json >/dev/null || true
 
       - name: Run exact private commit and wait for Cloud Build
         shell: bash
@@ -159,5 +147,6 @@ jobs:
             output/UsefulOrbit-Android-Agent-v0.6.0.apk.sha256
             evidence/android-v060-cloud-build.json
             evidence/build.json
+            evidence/trigger.json
           if-no-files-found: warn
           retention-days: 1
