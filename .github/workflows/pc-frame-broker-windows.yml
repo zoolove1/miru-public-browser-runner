@@ -1,0 +1,63 @@
+name: PC Frame Broker Windows
+
+on:
+  pull_request:
+    paths:
+      - "pc-frame-broker/**"
+      - ".github/workflows/pc-frame-broker-windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r pc-frame-broker/requirements.txt "pyinstaller>=6,<7"
+
+      - name: Source self-test
+        shell: pwsh
+        run: python pc-frame-broker/broker.py --self-test
+
+      - name: Build single-file Windows executable
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onefile --console `
+            --name miru-frame-broker `
+            --collect-all mss `
+            pc-frame-broker/broker.py
+
+      - name: Packaged executable self-test
+        shell: pwsh
+        run: .\dist\miru-frame-broker.exe --self-test
+
+      - name: Create artifact bundle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force bundle | Out-Null
+          Copy-Item dist\miru-frame-broker.exe bundle\miru-frame-broker.exe
+          Copy-Item pc-frame-broker\Start-MiruFrameBroker.ps1 bundle\Start-MiruFrameBroker.ps1
+          Copy-Item pc-frame-broker\README.md bundle\README.md
+          Compress-Archive -Path bundle\* -DestinationPath miru-frame-broker-windows.zip -Force
+
+      - name: Upload Windows bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: miru-frame-broker-windows
+          path: miru-frame-broker-windows.zip
+          if-no-files-found: error
+          retention-days: 7
