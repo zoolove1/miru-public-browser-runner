@@ -1,0 +1,95 @@
+name: Cloud Build Revalidation v0.1.0
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/cloud-build-revalidation-v010.yml'
+      - 'scripts/cloud-build-revalidation-v010.mjs'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cloud-build-revalidation-v010
+  cancel-in-progress: false
+
+jobs:
+  revalidate:
+    if: >-
+      github.actor == 'zoolove1' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER || vars.WORKLOAD_IDENTITY_PROVIDER }}
+      WIF_SERVICE_ACCOUNT: ${{ vars.GCP_WIF_SERVICE_ACCOUNT || vars.GCP_SERVICE_ACCOUNT }}
+
+    steps:
+      - name: Check out exact owner branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate one-time canary source and OIDC configuration
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          node --check scripts/cloud-build-revalidation-v010.mjs
+          grep -F "const PROJECT_ID = 'autonomy-system'" scripts/cloud-build-revalidation-v010.mjs
+          grep -F "const PROJECT_NUMBER = '770537155218'" scripts/cloud-build-revalidation-v010.mjs
+          if [[ -z "${WIF_PROVIDER:-}" || -z "${WIF_SERVICE_ACCOUNT:-}" ]]; then
+            jq -n '{
+              ok:false,
+              status:"CLOUD_BUILD_REVALIDATION_BLOCKED",
+              projectId:"autonomy-system",
+              projectNumber:"770537155218",
+              reason:"PUBLIC_RUNNER_WIF_CONFIGURATION_MISSING",
+              mutationPerformed:false,
+              secretMaterialReturned:false
+            }' > evidence/cloud-build-revalidation-v010.json
+            exit 1
+          fi
+
+      - name: Obtain short-lived Google access token through GitHub OIDC
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/cloud-platform
+          create_credentials_file: false
+
+      - name: Create temporary token envelope
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          set -euo pipefail
+          test -n "${GOOGLE_ACCESS_TOKEN:-}"
+          umask 077
+          jq -n --arg token "${GOOGLE_ACCESS_TOKEN}" '{access_token:$token}' > "${HOME}/.cloud-build-revalidation-token.json"
+
+      - name: Verify Cloud Build and run one source-free no-op build
+        run: |
+          set -euo pipefail
+          node scripts/cloud-build-revalidation-v010.mjs \
+            --project autonomy-system \
+            --clasprc "${HOME}/.cloud-build-revalidation-token.json" \
+            --output evidence/cloud-build-revalidation-v010.json
+
+      - name: Remove short-lived token envelope
+        if: ${{ always() }}
+        run: rm -f "${HOME}/.cloud-build-revalidation-token.json"
+
+      - name: Upload sanitized evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-build-revalidation-v010-${{ github.run_id }}
+          path: evidence/cloud-build-revalidation-v010.json
+          if-no-files-found: warn
+          retention-days: 7
