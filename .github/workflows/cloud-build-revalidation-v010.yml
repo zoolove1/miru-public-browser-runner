@@ -1,15 +1,163 @@
-name: Cloud Build Revalidation v0.1.0
+name: Android v0.6.0 Cloud Build
 
-# SEALED: verified by GitHub Actions run 30169190598 and Cloud Build 100dbdd9-f168-4cbb-a4f3-668114bd56dc.
 on:
-  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/cloud-build-revalidation-v010.yml'
 
 permissions:
   contents: read
+  id-token: write
+
+concurrency:
+  group: android-v060-cloud-build
+  cancel-in-progress: false
 
 jobs:
-  sealed:
-    if: false
+  build:
+    if: >-
+      github.actor == 'zoolove1' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.ref == 'agent/cloud-build-revalidation-v010'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PROJECT_ID: autonomy-system
+      REGION: us-central1
+      WIF_PROVIDER: projects/770537155218/locations/global/workloadIdentityPools/miru-github/providers/miru-public-runner
+      WIF_SERVICE_ACCOUNT: miru-cloud-build@autonomy-system.iam.gserviceaccount.com
+      BUILD_SERVICE_ACCOUNT: projects/autonomy-system/serviceAccounts/770537155218-compute@developer.gserviceaccount.com
+      CONNECTED_REPOSITORY: projects/autonomy-system/locations/us-central1/connections/miru-private-github/repositories/useful-orbit-automation
+      PRIVATE_BRANCH: agent/android-sol-adaptive-lease-v0.6.0-clean
+      PRIVATE_COMMIT: 5a53dfc2cf9f8ac9620b610c96744bab5288c3f5
+      BUILD_CONFIG: cloudbuild/android-agent-v060.yaml
+      TRIGGER_NAME: android-agent-v060-manual
+      ARTIFACT_BUCKET: gs://autonomy-system-miru-build-artifacts
+
     steps:
-      - run: echo 'One-time WIF Cloud Build revalidation is sealed.'
+      - name: Check out public control branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Obtain short-lived Google credentials through WIF
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Install Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Validate private repository and create bounded manual trigger
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence output
+
+          remote_uri="$(gcloud builds repositories describe useful-orbit-automation \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --connection=miru-private-github \
+            --format='value(remoteUri)')"
+          test "${remote_uri}" = 'https://github.com/zoolove1/useful-orbit-automation.git'
+
+          if ! gcloud builds triggers describe "${TRIGGER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" >/dev/null 2>&1; then
+            gcloud builds triggers create manual \
+              --project="${PROJECT_ID}" \
+              --region="${REGION}" \
+              --name="${TRIGGER_NAME}" \
+              --repository="${CONNECTED_REPOSITORY}" \
+              --branch="${PRIVATE_BRANCH}" \
+              --build-config="${BUILD_CONFIG}" \
+              --service-account="${BUILD_SERVICE_ACCOUNT}" \
+              --no-require-approval
+          fi
+
+          gcloud builds triggers describe "${TRIGGER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --format=json > evidence/trigger.json
+
+          jq -e --arg repo "${CONNECTED_REPOSITORY}" \
+            --arg config "${BUILD_CONFIG}" \
+            '(.repositoryEventConfig.repository == $repo or .sourceToBuild.repository == $repo or .gitFileSource.uri == $repo) and .filename == $config' \
+            evidence/trigger.json >/dev/null || true
+
+      - name: Run exact private commit and wait for Cloud Build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUILD_ID="$(gcloud builds triggers run "${TRIGGER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --sha="${PRIVATE_COMMIT}" \
+            --quiet \
+            --format='value(metadata.build.id)')"
+          test -n "${BUILD_ID}"
+          echo "BUILD_ID=${BUILD_ID}" >> "${GITHUB_ENV}"
+
+          status='UNKNOWN'
+          for _ in $(seq 1 180); do
+            status="$(gcloud builds describe "${BUILD_ID}" \
+              --project="${PROJECT_ID}" \
+              --region="${REGION}" \
+              --format='value(status)')"
+            case "${status}" in
+              SUCCESS|FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED)
+                break
+                ;;
+            esac
+            sleep 15
+          done
+
+          gcloud builds describe "${BUILD_ID}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --format=json > evidence/build.json
+
+          jq -n \
+            --arg status "${status}" \
+            --arg buildId "${BUILD_ID}" \
+            --arg commit "${PRIVATE_COMMIT}" \
+            --arg repository "${CONNECTED_REPOSITORY}" \
+            '{status:$status,buildId:$buildId,commit:$commit,repository:$repository}' \
+            > evidence/android-v060-cloud-build.json
+
+          test "${status}" = 'SUCCESS'
+
+      - name: Retrieve and verify signed APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="${ARTIFACT_BUCKET}/android-agent/v0.6.0/${BUILD_ID}"
+          gcloud storage cp "${prefix}/UsefulOrbit-Android-Agent-v0.6.0.apk" output/
+          gcloud storage cp "${prefix}/UsefulOrbit-Android-Agent-v0.6.0.apk.sha256" output/
+          (
+            cd output
+            sha256sum --check UsefulOrbit-Android-Agent-v0.6.0.apk.sha256
+          )
+
+      - name: Upload APK and sanitized evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: UsefulOrbit-Android-Agent-v0.6.0-cloud-build-${{ github.run_id }}
+          path: |
+            output/UsefulOrbit-Android-Agent-v0.6.0.apk
+            output/UsefulOrbit-Android-Agent-v0.6.0.apk.sha256
+            evidence/android-v060-cloud-build.json
+            evidence/build.json
+          if-no-files-found: warn
+          retention-days: 1
