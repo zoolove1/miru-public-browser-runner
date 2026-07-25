@@ -24,8 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER || vars.WORKLOAD_IDENTITY_PROVIDER }}
-      WIF_SERVICE_ACCOUNT: ${{ vars.GCP_WIF_SERVICE_ACCOUNT || vars.GCP_SERVICE_ACCOUNT }}
+      WIF_PROVIDER: projects/770537155218/locations/global/workloadIdentityPools/miru-github/providers/miru-public-runner
+      WIF_SERVICE_ACCOUNT: miru-cloud-build@autonomy-system.iam.gserviceaccount.com
 
     steps:
       - name: Check out exact owner branch
@@ -41,18 +41,8 @@ jobs:
           node --check scripts/cloud-build-revalidation-v010.mjs
           grep -F "const PROJECT_ID = 'autonomy-system'" scripts/cloud-build-revalidation-v010.mjs
           grep -F "const PROJECT_NUMBER = '770537155218'" scripts/cloud-build-revalidation-v010.mjs
-          if [[ -z "${WIF_PROVIDER:-}" || -z "${WIF_SERVICE_ACCOUNT:-}" ]]; then
-            jq -n '{
-              ok:false,
-              status:"CLOUD_BUILD_REVALIDATION_BLOCKED",
-              projectId:"autonomy-system",
-              projectNumber:"770537155218",
-              reason:"PUBLIC_RUNNER_WIF_CONFIGURATION_MISSING",
-              mutationPerformed:false,
-              secretMaterialReturned:false
-            }' > evidence/cloud-build-revalidation-v010.json
-            exit 1
-          fi
+          test "${WIF_PROVIDER}" = "projects/770537155218/locations/global/workloadIdentityPools/miru-github/providers/miru-public-runner"
+          test "${WIF_SERVICE_ACCOUNT}" = "miru-cloud-build@autonomy-system.iam.gserviceaccount.com"
 
       - name: Obtain short-lived Google access token through GitHub OIDC
         id: auth
