@@ -31,7 +31,7 @@ jobs:
       BUILD_SERVICE_ACCOUNT: projects/autonomy-system/serviceAccounts/770537155218-compute@developer.gserviceaccount.com
       CONNECTED_REPOSITORY: projects/autonomy-system/locations/us-central1/connections/miru-private-github/repositories/useful-orbit-automation
       PRIVATE_BRANCH: agent/android-sol-adaptive-lease-v0.6.0-clean
-      PRIVATE_COMMIT: 57d882b57d94b22f4961bdafc66b005dab7f400c
+      PRIVATE_COMMIT: 65d054bc04954ecca8cc46797561141bc8e473fe
       BUILD_CONFIG: cloudbuild/android-agent-v060.yaml
       TRIGGER_NAME: android-agent-v060-manual
       ARTIFACT_BUCKET: gs://autonomy-system-miru-build-artifacts
