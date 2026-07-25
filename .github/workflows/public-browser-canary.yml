@@ -1,0 +1,76 @@
+name: Public Browser Canary
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-browser-canary-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install pinned JavaScript dependency
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: npm install --no-audit --no-fund --ignore-scripts
+
+      - name: Resolve browser runtime
+        id: browser
+        shell: bash
+        run: |
+          set -euo pipefail
+          browser_path=''
+          for candidate in google-chrome-stable google-chrome chromium chromium-browser; do
+            if command -v "${candidate}" >/dev/null 2>&1; then
+              browser_path="$(command -v "${candidate}")"
+              break
+            fi
+          done
+
+          if [[ -n "${browser_path}" ]]; then
+            echo "Using system browser: ${browser_path}"
+            "${browser_path}" --version
+            printf 'executable=%s\n' "${browser_path}" >> "${GITHUB_OUTPUT}"
+          else
+            echo 'No system Chrome found; installing Playwright Chromium with dependencies.'
+            for attempt in 1 2 3; do
+              if npx playwright install --with-deps chromium; then
+                printf 'executable=\n' >> "${GITHUB_OUTPUT}"
+                exit 0
+              fi
+              sleep $((attempt * 15))
+            done
+            echo 'Browser installation failed after three attempts.' >&2
+            exit 1
+          fi
+
+      - name: Run startup and playback canaries
+        env:
+          BROWSER_EXECUTABLE_PATH: ${{ steps.browser.outputs.executable }}
+          EVIDENCE_DIR: evidence
+        run: npm run canary
+
+      - name: Upload public browser evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-browser-evidence-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 7
