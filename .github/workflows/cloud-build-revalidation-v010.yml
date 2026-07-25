@@ -1,5 +1,6 @@
 name: Cloud Build Revalidation v0.1.0
 
+# Re-run after ACT_AS_READY for 770537155218-compute@developer.gserviceaccount.com
 on:
   pull_request:
     types: [opened, synchronize, reopened]
