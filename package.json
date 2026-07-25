@@ -1,13 +1,13 @@
 {
   "name": "miru-public-browser-runner",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=22 <23"
   },
   "scripts": {
-    "canary": "node src/run-canaries-v2.mjs"
+    "canary": "node src/run-canaries-v3.mjs"
   },
   "dependencies": {
     "playwright": "1.61.1"
