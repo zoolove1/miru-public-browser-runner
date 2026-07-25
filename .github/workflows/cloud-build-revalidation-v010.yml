@@ -1,6 +1,6 @@
 name: Cloud Build Revalidation v0.1.0
 
-# Re-run after ACT_AS_READY for 770537155218-compute@developer.gserviceaccount.com
+# SEALED: verified by GitHub Actions run 30169190598 and Cloud Build 100dbdd9-f168-4cbb-a4f3-668114bd56dc.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -18,69 +18,8 @@ concurrency:
 
 jobs:
   revalidate:
-    if: >-
-      github.actor == 'zoolove1' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.base.ref == 'main'
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      WIF_PROVIDER: projects/770537155218/locations/global/workloadIdentityPools/miru-github/providers/miru-public-runner
-      WIF_SERVICE_ACCOUNT: miru-cloud-build@autonomy-system.iam.gserviceaccount.com
-
     steps:
-      - name: Check out exact owner branch
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Validate one-time canary source and OIDC configuration
-        run: |
-          set -euo pipefail
-          mkdir -p evidence
-          node --check scripts/cloud-build-revalidation-v010.mjs
-          grep -F "const PROJECT_ID = 'autonomy-system'" scripts/cloud-build-revalidation-v010.mjs
-          grep -F "const PROJECT_NUMBER = '770537155218'" scripts/cloud-build-revalidation-v010.mjs
-          test "${WIF_PROVIDER}" = "projects/770537155218/locations/global/workloadIdentityPools/miru-github/providers/miru-public-runner"
-          test "${WIF_SERVICE_ACCOUNT}" = "miru-cloud-build@autonomy-system.iam.gserviceaccount.com"
-
-      - name: Obtain short-lived Google access token through GitHub OIDC
-        id: auth
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ env.WIF_PROVIDER }}
-          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
-          token_format: access_token
-          access_token_scopes: https://www.googleapis.com/auth/cloud-platform
-          create_credentials_file: false
-
-      - name: Create temporary token envelope
-        env:
-          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
-        run: |
-          set -euo pipefail
-          test -n "${GOOGLE_ACCESS_TOKEN:-}"
-          umask 077
-          jq -n --arg token "${GOOGLE_ACCESS_TOKEN}" '{access_token:$token}' > "${HOME}/.cloud-build-revalidation-token.json"
-
-      - name: Verify Cloud Build and run one source-free no-op build
-        run: |
-          set -euo pipefail
-          node scripts/cloud-build-revalidation-v010.mjs \
-            --project autonomy-system \
-            --clasprc "${HOME}/.cloud-build-revalidation-token.json" \
-            --output evidence/cloud-build-revalidation-v010.json
-
-      - name: Remove short-lived token envelope
-        if: ${{ always() }}
-        run: rm -f "${HOME}/.cloud-build-revalidation-token.json"
-
-      - name: Upload sanitized evidence
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: cloud-build-revalidation-v010-${{ github.run_id }}
-          path: evidence/cloud-build-revalidation-v010.json
-          if-no-files-found: warn
-          retention-days: 7
+      - run: echo 'One-time WIF Cloud Build revalidation is sealed.'
