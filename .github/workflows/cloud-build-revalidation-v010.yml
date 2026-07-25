@@ -31,7 +31,7 @@ jobs:
       BUILD_SERVICE_ACCOUNT: projects/autonomy-system/serviceAccounts/770537155218-compute@developer.gserviceaccount.com
       CONNECTED_REPOSITORY: projects/autonomy-system/locations/us-central1/connections/miru-private-github/repositories/useful-orbit-automation
       PRIVATE_BRANCH: agent/android-sol-adaptive-lease-v0.6.0-clean
-      PRIVATE_COMMIT: 9412ef94e33324354f9767df478ab015fd921bb0
+      PRIVATE_COMMIT: 35339a25e7b5c67700688363a54ce911a86337ed
       BUILD_CONFIG: cloudbuild/android-agent-v060.yaml
       TRIGGER_NAME: android-agent-v060-manual
       ARTIFACT_BUCKET: gs://autonomy-system-miru-build-artifacts
@@ -125,6 +125,10 @@ jobs:
             --region="${REGION}" \
             --format=json > evidence/build.json
 
+          gcloud builds log "${BUILD_ID}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" > evidence/cloudbuild.log 2>&1 || true
+
           jq -n \
             --arg status "${status}" \
             --arg buildId "${BUILD_ID}" \
@@ -157,6 +161,7 @@ jobs:
             output/UsefulOrbit-Android-Agent-v0.6.0.apk.sha256
             evidence/android-v060-cloud-build.json
             evidence/build.json
+            evidence/cloudbuild.log
             evidence/trigger.json
             evidence/trigger-run.json
             evidence/trigger-run.stderr
