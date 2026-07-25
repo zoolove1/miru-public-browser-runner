@@ -2,24 +2,14 @@ name: Cloud Build Revalidation v0.1.0
 
 # SEALED: verified by GitHub Actions run 30169190598 and Cloud Build 100dbdd9-f168-4cbb-a4f3-668114bd56dc.
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '.github/workflows/cloud-build-revalidation-v010.yml'
-      - 'scripts/cloud-build-revalidation-v010.mjs'
+  workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write
-
-concurrency:
-  group: cloud-build-revalidation-v010
-  cancel-in-progress: false
 
 jobs:
-  revalidate:
+  sealed:
     if: false
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     steps:
       - run: echo 'One-time WIF Cloud Build revalidation is sealed.'
