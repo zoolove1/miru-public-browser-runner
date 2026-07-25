@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1.0.0",
+  "requestId": "PUBLIC-REQUEST-EXAMPLE-0001",
+  "url": "https://example.com/",
+  "waitMs": 1000,
+  "fullPage": true,
+  "maxTextChars": 5000
+}
