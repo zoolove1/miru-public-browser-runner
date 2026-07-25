@@ -1,0 +1,116 @@
+name: Public Browser Request Router
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'requests/*.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-browser-request-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  execute-public-request:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out trusted base implementation
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+
+      - name: Check out request head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          path: request-head
+
+      - name: Require one request JSON and no other changes
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha='${{ github.event.pull_request.base.sha }}'
+          head_sha='${{ github.event.pull_request.head.sha }}'
+          git -C request-head fetch origin "${base_sha}" --depth=1
+          mapfile -t changed < <(git -C request-head diff --name-only "${base_sha}...${head_sha}" | sort)
+          mapfile -t added < <(git -C request-head diff --name-only --diff-filter=A "${base_sha}...${head_sha}" -- 'requests/*.json' | sort)
+          if [[ "${#changed[@]}" -ne 1 || "${#added[@]}" -ne 1 ]]; then
+            echo 'A public request PR must add exactly one JSON file and change nothing else.' >&2
+            printf 'Changed files:\n%s\n' "${changed[*]:-<none>}" >&2
+            exit 1
+          fi
+          request_path="${added[0]}"
+          if [[ ! "${request_path}" =~ ^requests/PUBLIC-REQUEST-[A-Z0-9][A-Z0-9_-]{3,79}\.json$ ]]; then
+            echo "Invalid request path: ${request_path}" >&2
+            exit 1
+          fi
+          request_name="$(basename "${request_path}")"
+          mkdir -p trusted/requests
+          cp "request-head/${request_path}" "trusted/requests/${request_name}"
+          printf 'request_name=%s\n' "${request_name}" >> "${GITHUB_OUTPUT}"
+          printf 'request_stem=%s\n' "${request_name%.json}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install pinned dependency
+        working-directory: trusted
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: npm install --no-audit --no-fund --ignore-scripts
+
+      - name: Resolve browser runtime
+        id: browser
+        shell: bash
+        run: |
+          set -euo pipefail
+          browser_path=''
+          for candidate in google-chrome-stable google-chrome chromium chromium-browser; do
+            if command -v "${candidate}" >/dev/null 2>&1; then
+              browser_path="$(command -v "${candidate}")"
+              break
+            fi
+          done
+          if [[ -n "${browser_path}" ]]; then
+            "${browser_path}" --version
+            printf 'executable=%s\n' "${browser_path}" >> "${GITHUB_OUTPUT}"
+          else
+            for attempt in 1 2 3; do
+              if (cd trusted && npx playwright install --with-deps chromium); then
+                printf 'executable=\n' >> "${GITHUB_OUTPUT}"
+                exit 0
+              fi
+              sleep $((attempt * 15))
+            done
+            exit 1
+          fi
+
+      - name: Execute trusted public request
+        working-directory: trusted
+        env:
+          BROWSER_EXECUTABLE_PATH: ${{ steps.browser.outputs.executable }}
+        run: |
+          rm -rf request-evidence
+          mkdir -p request-evidence
+          node src/run-public-request.mjs \
+            --request "requests/${{ steps.request.outputs.request_name }}" \
+            --evidence request-evidence
+
+      - name: Upload request evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-browser-request-${{ steps.request.outputs.request_stem }}-${{ github.run_id }}
+          path: trusted/request-evidence/
+          if-no-files-found: warn
+          retention-days: 7
