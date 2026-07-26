@@ -1,0 +1,173 @@
+name: Android Agent v0.6.2 Successor Preflight Build
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/android-agent-v062-build.yml'
+      - 'control/android-v062-build-commit.txt'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: android-agent-v062-successor-preflight-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: >-
+      github.actor == 'zoolove1' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.ref == 'agent/cloud-build-revalidation-v010'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      PROJECT_ID: autonomy-system
+      REGION: us-central1
+      WIF_PROVIDER: projects/770537155218/locations/global/workloadIdentityPools/miru-github/providers/miru-public-runner
+      WIF_SERVICE_ACCOUNT: miru-cloud-build@autonomy-system.iam.gserviceaccount.com
+      BUILD_SERVICE_ACCOUNT: projects/autonomy-system/serviceAccounts/770537155218-compute@developer.gserviceaccount.com
+      CONNECTED_REPOSITORY: projects/autonomy-system/locations/us-central1/connections/miru-private-github/repositories/useful-orbit-automation
+      PRIVATE_BRANCH: agent/android-sol-successor-preflight-v0.6.2
+      BUILD_CONFIG: cloudbuild/android-agent-v062-successor-preflight.yaml
+      TRIGGER_NAME: android-agent-v062-successor-preflight
+      ARTIFACT_BUCKET: gs://autonomy-system-miru-build-artifacts
+
+    steps:
+      - name: Check out public control branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate exact private commit marker
+        shell: bash
+        run: |
+          set -euo pipefail
+          private_commit="$(tr -d '\r\n[:space:]' < control/android-v062-build-commit.txt)"
+          [[ "${private_commit}" =~ ^[0-9a-f]{40}$ ]]
+          echo "PRIVATE_COMMIT=${private_commit}" >> "${GITHUB_ENV}"
+
+      - name: Obtain short-lived Google credentials through WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Install Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Create or reuse bounded Android v0.6.2 build trigger
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence output
+          if ! gcloud builds triggers describe "${TRIGGER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" >/dev/null 2>&1; then
+            gcloud builds triggers create manual \
+              --project="${PROJECT_ID}" \
+              --region="${REGION}" \
+              --name="${TRIGGER_NAME}" \
+              --repository="${CONNECTED_REPOSITORY}" \
+              --branch="${PRIVATE_BRANCH}" \
+              --build-config="${BUILD_CONFIG}" \
+              --service-account="${BUILD_SERVICE_ACCOUNT}" \
+              --no-require-approval
+          fi
+          gcloud builds triggers describe "${TRIGGER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --format=json > evidence/trigger.json
+
+      - name: Run exact private commit and wait
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud builds triggers run "${TRIGGER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --sha="${PRIVATE_COMMIT}" \
+            --quiet \
+            --format=json > evidence/trigger-run.json 2> evidence/trigger-run.stderr
+
+          BUILD_ID="$(jq -r '.metadata.build.id // .metadata.buildId // .id // empty' evidence/trigger-run.json)"
+          test -n "${BUILD_ID}"
+          echo "BUILD_ID=${BUILD_ID}" >> "${GITHUB_ENV}"
+
+          status='UNKNOWN'
+          for _ in $(seq 1 240); do
+            status="$(gcloud builds describe "${BUILD_ID}" \
+              --project="${PROJECT_ID}" \
+              --region="${REGION}" \
+              --format='value(status)')"
+            case "${status}" in
+              SUCCESS|FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED) break ;;
+            esac
+            sleep 10
+          done
+
+          gcloud builds describe "${BUILD_ID}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --format=json > evidence/build.json
+          gcloud builds log "${BUILD_ID}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" > evidence/cloudbuild.log 2>&1 || true
+
+          jq -n \
+            --arg status "${status}" \
+            --arg buildId "${BUILD_ID}" \
+            --arg commit "${PRIVATE_COMMIT}" \
+            '{status:$status,buildId:$buildId,commit:$commit}' \
+            > evidence/control-result.json
+
+          prefix="${ARTIFACT_BUCKET}/android-agent/v0.6.2-successor-preflight/${BUILD_ID}"
+          gcloud storage cp "${prefix}/UsefulOrbit-Android-Agent-v0.6.2.apk" output/UsefulOrbit-Android-Agent-v0.6.2.apk
+          gcloud storage cp "${prefix}/UsefulOrbit-Android-Agent-v0.6.2.apk.sha256" output/UsefulOrbit-Android-Agent-v0.6.2.apk.sha256
+          gcloud storage cp "${prefix}/successor-preflight-patch.log" evidence/successor-preflight-patch.log
+          gcloud storage cp "${prefix}/successor-preflight-validation.log" evidence/successor-preflight-validation.log
+          gcloud storage cp "${prefix}/identity-contract-validation.log" evidence/identity-contract-validation.log
+          gcloud storage cp "${prefix}/contract-validation.log" evidence/contract-validation.log
+          gcloud storage cp "${prefix}/android-build.log" evidence/android-build.log
+          gcloud storage cp "${prefix}/apk-signature.txt" evidence/apk-signature.txt
+
+          test "${status}" = 'SUCCESS'
+          test -s output/UsefulOrbit-Android-Agent-v0.6.2.apk
+          expected_hash="$(awk '{print $1}' output/UsefulOrbit-Android-Agent-v0.6.2.apk.sha256)"
+          actual_hash="$(sha256sum output/UsefulOrbit-Android-Agent-v0.6.2.apk | awk '{print $1}')"
+          test "${actual_hash}" = "${expected_hash}"
+          grep -F 'ANDROID_SOL_SUCCESSOR_PREFLIGHT_V062_VALIDATION_OK' evidence/successor-preflight-validation.log
+          grep -F 'ANDROID_SOL_WORKER_IDENTITY_SUCCESSOR_V062_OK' evidence/identity-contract-validation.log
+          grep -F 'ANDROID_BROWSER_AGENT_SOL_SUCCESSOR_PREFLIGHT_V062_OK' evidence/contract-validation.log
+          grep -F 'Signer #1 certificate SHA-256 digest: aee59b74a81327b07e0eea7f76831da317f9aed334a9448ce4306d2c0925d0e5' evidence/apk-signature.txt
+
+      - name: Upload signed APK and evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-agent-v062-successor-preflight-${{ github.run_id }}
+          path: |
+            output/UsefulOrbit-Android-Agent-v0.6.2.apk
+            output/UsefulOrbit-Android-Agent-v0.6.2.apk.sha256
+            evidence/control-result.json
+            evidence/build.json
+            evidence/cloudbuild.log
+            evidence/successor-preflight-patch.log
+            evidence/successor-preflight-validation.log
+            evidence/identity-contract-validation.log
+            evidence/contract-validation.log
+            evidence/android-build.log
+            evidence/apk-signature.txt
+            evidence/trigger.json
+            evidence/trigger-run.json
+            evidence/trigger-run.stderr
+          if-no-files-found: warn
+          retention-days: 2
