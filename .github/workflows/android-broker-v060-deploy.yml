@@ -118,6 +118,9 @@ jobs:
             --project="${PROJECT_ID}" \
             --region="${REGION}" \
             --format=json > evidence/build.json
+          gcloud builds log "${BUILD_ID}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" > evidence/cloudbuild.log 2>&1 || true
 
           jq -n \
             --arg status "${status}" \
@@ -155,6 +158,7 @@ jobs:
           path: |
             evidence/control-result.json
             evidence/build.json
+            evidence/cloudbuild.log
             evidence/sanitized-result.json
             evidence/trigger.json
             evidence/trigger-run.json
