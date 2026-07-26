@@ -1,0 +1,92 @@
+name: Apps Script ADC Preflight
+
+on:
+  push:
+    branches:
+      - agent/cloud-build-revalidation-v010
+    paths:
+      - .github/workflows/apps-script-adc-preflight-v010.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PROJECT_ID: autonomy-system
+      PROJECT_NUMBER: '770537155218'
+      WIF_PROVIDER: projects/770537155218/locations/global/workloadIdentityPools/miru-github/providers/miru-public-runner
+      WIF_SERVICE_ACCOUNT: miru-cloud-build@autonomy-system.iam.gserviceaccount.com
+      BUILD_SERVICE_ACCOUNT: projects/autonomy-system/serviceAccounts/770537155218-compute@developer.gserviceaccount.com
+      SCRIPT_ID: 19TfGZdvI0d8I8mwzsdHW1bWt6WGXuTdyMbSv8K8qoguz0HFp0oMiQ_F7
+    steps:
+      - name: Check out control branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Obtain short-lived Google credentials through WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+
+      - name: Install Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Run source-free Apps Script ADC read-only canary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/apps-script-adc-preflight.yaml <<'EOF'
+          steps:
+            - name: 'gcr.io/cloud-builders/gcloud'
+              entrypoint: 'bash'
+              args:
+                - '-ceu'
+                - |
+                  TOKEN="$$(gcloud auth print-access-token)"
+                  curl -fsS \
+                    -H "Authorization: Bearer $${TOKEN}" \
+                    "https://script.googleapis.com/v1/projects/${_SCRIPT_ID}/content" \
+                    > /tmp/content.json
+                  curl -fsS \
+                    -H "Authorization: Bearer $${TOKEN}" \
+                    "https://script.googleapis.com/v1/projects/${_SCRIPT_ID}/deployments" \
+                    > /tmp/deployments.json
+                  python3 - <<'PY'
+                  import json
+                  from pathlib import Path
+                  content = json.loads(Path('/tmp/content.json').read_text())
+                  deployments = json.loads(Path('/tmp/deployments.json').read_text())
+                  files = content.get('files', [])
+                  manifest = [f for f in files if f.get('type') == 'JSON' and f.get('name') == 'appsscript']
+                  assert files, 'NO_SCRIPT_FILES'
+                  assert manifest, 'MANIFEST_NOT_FOUND'
+                  print('APPS_SCRIPT_ADC_PREFLIGHT_OK')
+                  print(f"FILE_COUNT={len(files)}")
+                  print(f"DEPLOYMENT_COUNT={len(deployments.get('deployments', []))}")
+                  print('MANIFEST_PRESENT=true')
+                  PY
+          substitutions:
+            _SCRIPT_ID: '19TfGZdvI0d8I8mwzsdHW1bWt6WGXuTdyMbSv8K8qoguz0HFp0oMiQ_F7'
+          options:
+            logging: CLOUD_LOGGING_ONLY
+            machineType: E2_STANDARD_2
+          timeout: '180s'
+          EOF
+
+          gcloud builds submit \
+            --project="${PROJECT_ID}" \
+            --no-source \
+            --config=/tmp/apps-script-adc-preflight.yaml \
+            --service-account="${BUILD_SERVICE_ACCOUNT}" \
+            --format='value(id,status)' | tee /tmp/build-result.txt
+
+          grep -q 'SUCCESS' /tmp/build-result.txt
