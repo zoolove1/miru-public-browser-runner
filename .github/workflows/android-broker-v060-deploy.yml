@@ -1,0 +1,163 @@
+name: Android Broker v0.6.0 Deploy
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/android-broker-v060-deploy.yml'
+      - 'control/android-v060-private-commit.txt'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: android-broker-v060-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.actor == 'zoolove1' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.ref == 'agent/cloud-build-revalidation-v010'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      PROJECT_ID: autonomy-system
+      REGION: us-central1
+      WIF_PROVIDER: projects/770537155218/locations/global/workloadIdentityPools/miru-github/providers/miru-public-runner
+      WIF_SERVICE_ACCOUNT: miru-cloud-build@autonomy-system.iam.gserviceaccount.com
+      BUILD_SERVICE_ACCOUNT: projects/autonomy-system/serviceAccounts/770537155218-compute@developer.gserviceaccount.com
+      CONNECTED_REPOSITORY: projects/autonomy-system/locations/us-central1/connections/miru-private-github/repositories/useful-orbit-automation
+      PRIVATE_BRANCH: agent/android-sol-adaptive-lease-v0.6.0-clean
+      BUILD_CONFIG: cloudbuild/android-broker-v060-deploy.yaml
+      TRIGGER_NAME: android-broker-v060-deploy
+      ARTIFACT_BUCKET: gs://autonomy-system-miru-build-artifacts
+
+    steps:
+      - name: Check out public control branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate exact private commit marker
+        shell: bash
+        run: |
+          set -euo pipefail
+          private_commit="$(tr -d '\r\n[:space:]' < control/android-v060-private-commit.txt)"
+          [[ "${private_commit}" =~ ^[0-9a-f]{40}$ ]]
+          echo "PRIVATE_COMMIT=${private_commit}" >> "${GITHUB_ENV}"
+
+      - name: Obtain short-lived Google credentials through WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Install Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Create or reuse bounded broker deployment trigger
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          if ! gcloud builds triggers describe "${TRIGGER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" >/dev/null 2>&1; then
+            gcloud builds triggers create manual \
+              --project="${PROJECT_ID}" \
+              --region="${REGION}" \
+              --name="${TRIGGER_NAME}" \
+              --repository="${CONNECTED_REPOSITORY}" \
+              --branch="${PRIVATE_BRANCH}" \
+              --build-config="${BUILD_CONFIG}" \
+              --service-account="${BUILD_SERVICE_ACCOUNT}" \
+              --no-require-approval
+          fi
+          gcloud builds triggers describe "${TRIGGER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --format=json > evidence/trigger.json
+
+      - name: Run exact private commit and wait
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud builds triggers run "${TRIGGER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --sha="${PRIVATE_COMMIT}" \
+            --quiet \
+            --format=json > evidence/trigger-run.json 2> evidence/trigger-run.stderr
+
+          BUILD_ID="$(jq -r '.metadata.build.id // .metadata.buildId // .id // empty' evidence/trigger-run.json)"
+          test -n "${BUILD_ID}"
+          echo "BUILD_ID=${BUILD_ID}" >> "${GITHUB_ENV}"
+
+          status='UNKNOWN'
+          for _ in $(seq 1 160); do
+            status="$(gcloud builds describe "${BUILD_ID}" \
+              --project="${PROJECT_ID}" \
+              --region="${REGION}" \
+              --format='value(status)')"
+            case "${status}" in
+              SUCCESS|FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED) break ;;
+            esac
+            sleep 10
+          done
+
+          gcloud builds describe "${BUILD_ID}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --format=json > evidence/build.json
+
+          jq -n \
+            --arg status "${status}" \
+            --arg buildId "${BUILD_ID}" \
+            --arg commit "${PRIVATE_COMMIT}" \
+            '{status:$status,buildId:$buildId,commit:$commit}' \
+            > evidence/control-result.json
+
+          prefix="${ARTIFACT_BUCKET}/android-broker/v0.6.0/${BUILD_ID}"
+          gcloud storage cp "${prefix}/deploy-result.json" evidence/deploy-result.json || true
+          test -s evidence/deploy-result.json
+          test "${status}" = 'SUCCESS'
+
+      - name: Verify sanitized broker result
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '
+            .ok == true and
+            .status == "ANDROID_SOL_WORKER_LEASE_V060_DEPLOYED_AND_CANARY_PASSED" and
+            .deviceKeyPreserved == true and
+            .temporaryCanaryRouteRemoved == true and
+            .health.workerLeaseProtocolVersion == "0.6.0" and
+            .canary.status == "ANDROID_SOL_WORKER_LEASE_CANARY_PASS"
+          ' evidence/deploy-result.json >/dev/null
+          jq '{status,scriptId,deploymentId,beforeCodeSha256,finalCodeSha256,finalVersion,health,canary,temporaryCanaryRouteRemoved}' \
+            evidence/deploy-result.json > evidence/sanitized-result.json
+          echo 'ANDROID_SOL_WORKER_LEASE_V060_DEPLOYMENT_VERIFIED'
+
+      - name: Upload sanitized evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-broker-v060-deploy-${{ github.run_id }}
+          path: |
+            evidence/control-result.json
+            evidence/build.json
+            evidence/sanitized-result.json
+            evidence/trigger.json
+            evidence/trigger-run.json
+            evidence/trigger-run.stderr
+          if-no-files-found: warn
+          retention-days: 2
