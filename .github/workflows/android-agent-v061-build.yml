@@ -139,7 +139,9 @@ jobs:
 
           test "${status}" = 'SUCCESS'
           test -s output/UsefulOrbit-Android-Agent-v0.6.1.apk
-          (cd output && sha256sum --check UsefulOrbit-Android-Agent-v0.6.1.apk.sha256)
+          expected_hash="$(awk '{print $1}' output/UsefulOrbit-Android-Agent-v0.6.1.apk.sha256)"
+          actual_hash="$(sha256sum output/UsefulOrbit-Android-Agent-v0.6.1.apk | awk '{print $1}')"
+          test "${actual_hash}" = "${expected_hash}"
           grep -F 'ANDROID_SOL_WORKER_LOGICAL_IDENTITY_V061_OK' evidence/identity-contract-validation.log
           grep -F 'ANDROID_BROWSER_AGENT_SOL_WORKER_LOGICAL_IDENTITY_V061_OK' evidence/contract-validation.log
           grep -F 'Signer #1 certificate SHA-256 digest: aee59b74a81327b07e0eea7f76831da317f9aed334a9448ce4306d2c0925d0e5' evidence/apk-signature.txt
