@@ -35,6 +35,7 @@ jobs:
       BUILD_CONFIG: cloudbuild/android-agent-v060.yaml
       TRIGGER_NAME: android-agent-v060-manual
       ARTIFACT_BUCKET: gs://autonomy-system-miru-build-artifacts
+      SCRIPT_ID: 19TfGZdvI0d8I8mwzsdHW1bWt6WGXuTdyMbSv8K8qoguz0HFp0oMiQ_F7
 
     steps:
       - name: Check out public control branch
@@ -64,6 +65,56 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.PROJECT_ID }}
+
+      - name: Verify Cloud Build runtime ADC can read Apps Script
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence output
+          cat > /tmp/apps-script-adc-preflight.yaml <<'EOF'
+          steps:
+            - name: 'gcr.io/cloud-builders/gcloud'
+              entrypoint: 'bash'
+              args:
+                - '-ceu'
+                - |
+                  TOKEN="$$(gcloud auth print-access-token)"
+                  curl -fsS -H "Authorization: Bearer $${TOKEN}" \
+                    "https://script.googleapis.com/v1/projects/${_SCRIPT_ID}/content" \
+                    > /tmp/content.json
+                  curl -fsS -H "Authorization: Bearer $${TOKEN}" \
+                    "https://script.googleapis.com/v1/projects/${_SCRIPT_ID}/deployments" \
+                    > /tmp/deployments.json
+                  python3 - <<'PY'
+                  import json
+                  from pathlib import Path
+                  content = json.loads(Path('/tmp/content.json').read_text())
+                  deployments = json.loads(Path('/tmp/deployments.json').read_text())
+                  files = content.get('files', [])
+                  manifest = [f for f in files if f.get('type') == 'JSON' and f.get('name') == 'appsscript']
+                  assert files, 'NO_SCRIPT_FILES'
+                  assert manifest, 'MANIFEST_NOT_FOUND'
+                  print('APPS_SCRIPT_ADC_PREFLIGHT_OK')
+                  print(f"FILE_COUNT={len(files)}")
+                  print(f"DEPLOYMENT_COUNT={len(deployments.get('deployments', []))}")
+                  print('MANIFEST_PRESENT=true')
+                  PY
+          substitutions:
+            _SCRIPT_ID: '19TfGZdvI0d8I8mwzsdHW1bWt6WGXuTdyMbSv8K8qoguz0HFp0oMiQ_F7'
+          options:
+            logging: CLOUD_LOGGING_ONLY
+            machineType: E2_STANDARD_2
+          timeout: '180s'
+          EOF
+
+          gcloud builds submit \
+            --project="${PROJECT_ID}" \
+            --no-source \
+            --config=/tmp/apps-script-adc-preflight.yaml \
+            --service-account="${BUILD_SERVICE_ACCOUNT}" \
+            --format=json > evidence/apps-script-adc-preflight.json
+
+          jq -e '.status == "SUCCESS"' evidence/apps-script-adc-preflight.json >/dev/null
 
       - name: Create or reuse bounded manual trigger
         shell: bash
@@ -167,6 +218,7 @@ jobs:
           path: |
             output/UsefulOrbit-Android-Agent-v0.6.0.apk
             output/UsefulOrbit-Android-Agent-v0.6.0.apk.sha256
+            evidence/apps-script-adc-preflight.json
             evidence/android-v060-cloud-build.json
             evidence/build.json
             evidence/cloudbuild.log
