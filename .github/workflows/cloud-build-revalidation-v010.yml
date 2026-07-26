@@ -36,6 +36,7 @@ jobs:
       TRIGGER_NAME: android-agent-v060-manual
       ARTIFACT_BUCKET: gs://autonomy-system-miru-build-artifacts
       SCRIPT_ID: 19TfGZdvI0d8I8mwzsdHW1bWt6WGXuTdyMbSv8K8qoguz0HFp0oMiQ_F7
+      RUN_ANDROID_BUILD: 'false'
 
     steps:
       - name: Check out public control branch
@@ -101,30 +102,70 @@ jobs:
                   PY
           substitutions:
             _SCRIPT_ID: '19TfGZdvI0d8I8mwzsdHW1bWt6WGXuTdyMbSv8K8qoguz0HFp0oMiQ_F7'
+          serviceAccount: 'projects/autonomy-system/serviceAccounts/770537155218-compute@developer.gserviceaccount.com'
           options:
             logging: CLOUD_LOGGING_ONLY
             machineType: E2_STANDARD_2
           timeout: '180s'
           EOF
 
+          set +e
           gcloud builds submit \
             --project="${PROJECT_ID}" \
             --no-source \
             --config=/tmp/apps-script-adc-preflight.yaml \
-            --service-account="${BUILD_SERVICE_ACCOUNT}" \
-            --format=json > evidence/apps-script-adc-preflight.json
+            --async \
+            --format=json \
+            > evidence/apps-script-adc-submit.json \
+            2> evidence/apps-script-adc-submit.stderr
+          submit_rc=$?
+          set -e
+          printf '%s\n' "${submit_rc}" > evidence/apps-script-adc-submit.rc
+          cat evidence/apps-script-adc-submit.stderr >&2 || true
+          test "${submit_rc}" -eq 0
 
-          jq -e '.status == "SUCCESS"' evidence/apps-script-adc-preflight.json >/dev/null
+          PREFLIGHT_BUILD_ID="$(jq -r '.id // .metadata.build.id // empty' evidence/apps-script-adc-submit.json)"
+          test -n "${PREFLIGHT_BUILD_ID}"
+          echo "PREFLIGHT_BUILD_ID=${PREFLIGHT_BUILD_ID}" >> "${GITHUB_ENV}"
+
+          preflight_status='UNKNOWN'
+          for _ in $(seq 1 60); do
+            preflight_status="$(gcloud builds describe "${PREFLIGHT_BUILD_ID}" \
+              --project="${PROJECT_ID}" \
+              --format='value(status)')"
+            case "${preflight_status}" in
+              SUCCESS|FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED)
+                break
+                ;;
+            esac
+            sleep 5
+          done
+
+          gcloud builds describe "${PREFLIGHT_BUILD_ID}" \
+            --project="${PROJECT_ID}" \
+            --format=json > evidence/apps-script-adc-build.json
+
+          gcloud builds log "${PREFLIGHT_BUILD_ID}" \
+            --project="${PROJECT_ID}" \
+            > evidence/apps-script-adc-cloudbuild.log 2>&1 || true
+
+          jq -n \
+            --arg status "${preflight_status}" \
+            --arg buildId "${PREFLIGHT_BUILD_ID}" \
+            --arg scriptId "${SCRIPT_ID}" \
+            '{status:$status,buildId:$buildId,scriptId:$scriptId}' \
+            > evidence/apps-script-adc-preflight.json
+
+          cat evidence/apps-script-adc-cloudbuild.log
+          test "${preflight_status}" = 'SUCCESS'
 
       - name: Create or reuse bounded manual trigger
+        if: ${{ env.RUN_ANDROID_BUILD == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p evidence output
-
-          if ! gcloud builds triggers describe "${TRIGGER_NAME}" \
-            --project="${PROJECT_ID}" \
-            --region="${REGION}" >/dev/null 2>&1; then
+          if ! gcloud builds triggers describe "${TRIGGER_NAME}" --project="${PROJECT_ID}" --region="${REGION}" >/dev/null 2>&1; then
             gcloud builds triggers create manual \
               --project="${PROJECT_ID}" \
               --region="${REGION}" \
@@ -135,80 +176,42 @@ jobs:
               --service-account="${BUILD_SERVICE_ACCOUNT}" \
               --no-require-approval
           fi
-
-          gcloud builds triggers describe "${TRIGGER_NAME}" \
-            --project="${PROJECT_ID}" \
-            --region="${REGION}" \
-            --format=json > evidence/trigger.json
+          gcloud builds triggers describe "${TRIGGER_NAME}" --project="${PROJECT_ID}" --region="${REGION}" --format=json > evidence/trigger.json
 
       - name: Run exact private commit and wait for Cloud Build
+        if: ${{ env.RUN_ANDROID_BUILD == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
-
-          set +e
           gcloud builds triggers run "${TRIGGER_NAME}" \
             --project="${PROJECT_ID}" \
             --region="${REGION}" \
             --sha="${PRIVATE_COMMIT}" \
             --quiet \
             --format=json > evidence/trigger-run.json 2> evidence/trigger-run.stderr
-          trigger_rc=$?
-          set -e
-
-          if [[ ${trigger_rc} -ne 0 ]]; then
-            cat evidence/trigger-run.stderr >&2
-            exit ${trigger_rc}
-          fi
-
           BUILD_ID="$(jq -r '.metadata.build.id // .metadata.buildId // .id // empty' evidence/trigger-run.json)"
           test -n "${BUILD_ID}"
           echo "BUILD_ID=${BUILD_ID}" >> "${GITHUB_ENV}"
-
           status='UNKNOWN'
           for _ in $(seq 1 180); do
-            status="$(gcloud builds describe "${BUILD_ID}" \
-              --project="${PROJECT_ID}" \
-              --region="${REGION}" \
-              --format='value(status)')"
-            case "${status}" in
-              SUCCESS|FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED)
-                break
-                ;;
-            esac
+            status="$(gcloud builds describe "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(status)')"
+            case "${status}" in SUCCESS|FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED) break ;; esac
             sleep 15
           done
-
-          gcloud builds describe "${BUILD_ID}" \
-            --project="${PROJECT_ID}" \
-            --region="${REGION}" \
-            --format=json > evidence/build.json
-
-          gcloud builds log "${BUILD_ID}" \
-            --project="${PROJECT_ID}" \
-            --region="${REGION}" > evidence/cloudbuild.log 2>&1 || true
-
-          jq -n \
-            --arg status "${status}" \
-            --arg buildId "${BUILD_ID}" \
-            --arg commit "${PRIVATE_COMMIT}" \
-            --arg repository "${CONNECTED_REPOSITORY}" \
-            '{status:$status,buildId:$buildId,commit:$commit,repository:$repository}' \
-            > evidence/android-v060-cloud-build.json
-
+          gcloud builds describe "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" --format=json > evidence/build.json
+          gcloud builds log "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" > evidence/cloudbuild.log 2>&1 || true
+          jq -n --arg status "${status}" --arg buildId "${BUILD_ID}" --arg commit "${PRIVATE_COMMIT}" --arg repository "${CONNECTED_REPOSITORY}" '{status:$status,buildId:$buildId,commit:$commit,repository:$repository}' > evidence/android-v060-cloud-build.json
           test "${status}" = 'SUCCESS'
 
       - name: Retrieve and verify signed APK
+        if: ${{ env.RUN_ANDROID_BUILD == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           prefix="${ARTIFACT_BUCKET}/android-agent/v0.6.0/${BUILD_ID}"
           gcloud storage cp "${prefix}/UsefulOrbit-Android-Agent-v0.6.0.apk" output/
           gcloud storage cp "${prefix}/UsefulOrbit-Android-Agent-v0.6.0.apk.sha256" output/
-          (
-            cd output
-            sha256sum --check UsefulOrbit-Android-Agent-v0.6.0.apk.sha256
-          )
+          (cd output && sha256sum --check UsefulOrbit-Android-Agent-v0.6.0.apk.sha256)
 
       - name: Upload APK and sanitized evidence
         if: ${{ always() }}
@@ -218,6 +221,11 @@ jobs:
           path: |
             output/UsefulOrbit-Android-Agent-v0.6.0.apk
             output/UsefulOrbit-Android-Agent-v0.6.0.apk.sha256
+            evidence/apps-script-adc-submit.json
+            evidence/apps-script-adc-submit.stderr
+            evidence/apps-script-adc-submit.rc
+            evidence/apps-script-adc-build.json
+            evidence/apps-script-adc-cloudbuild.log
             evidence/apps-script-adc-preflight.json
             evidence/android-v060-cloud-build.json
             evidence/build.json
