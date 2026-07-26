@@ -130,6 +130,8 @@ jobs:
             > evidence/control-result.json
 
           prefix="${ARTIFACT_BUCKET}/android-broker/v0.6.0/${BUILD_ID}"
+          gcloud storage cp "${prefix}/validation.log" evidence/validation.log || true
+          gcloud storage cp "${prefix}/validation.rc" evidence/validation.rc || true
           gcloud storage cp "${prefix}/deploy-result.json" evidence/deploy-result.json || true
           test -s evidence/deploy-result.json
           test "${status}" = 'SUCCESS'
@@ -159,6 +161,8 @@ jobs:
             evidence/control-result.json
             evidence/build.json
             evidence/cloudbuild.log
+            evidence/validation.log
+            evidence/validation.rc
             evidence/sanitized-result.json
             evidence/trigger.json
             evidence/trigger-run.json
