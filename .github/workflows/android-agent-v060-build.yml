@@ -1,4 +1,4 @@
-name: Android Agent v0.6.0 Build
+name: Android Agent v0.6.0 IME Pre-Send Build
 
 on:
   pull_request:
@@ -12,7 +12,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: android-agent-v060-build
+  group: android-agent-v060-ime-presend-build
   cancel-in-progress: false
 
 jobs:
@@ -32,8 +32,8 @@ jobs:
       BUILD_SERVICE_ACCOUNT: projects/autonomy-system/serviceAccounts/770537155218-compute@developer.gserviceaccount.com
       CONNECTED_REPOSITORY: projects/autonomy-system/locations/us-central1/connections/miru-private-github/repositories/useful-orbit-automation
       PRIVATE_BRANCH: agent/android-sol-adaptive-lease-v0.6.0-clean
-      BUILD_CONFIG: cloudbuild/android-agent-v060.yaml
-      TRIGGER_NAME: android-agent-v060-manual
+      BUILD_CONFIG: cloudbuild/android-agent-v060-ime-presend.yaml
+      TRIGGER_NAME: android-agent-v060-ime-presend
       ARTIFACT_BUCKET: gs://autonomy-system-miru-build-artifacts
 
     steps:
@@ -129,7 +129,7 @@ jobs:
             '{status:$status,buildId:$buildId,commit:$commit}' \
             > evidence/control-result.json
 
-          prefix="${ARTIFACT_BUCKET}/android-agent/v0.6.0/${BUILD_ID}"
+          prefix="${ARTIFACT_BUCKET}/android-agent/v0.6.0-ime-presend/${BUILD_ID}"
           gcloud storage cp "${prefix}/UsefulOrbit-Android-Agent-v0.6.0.apk" output/UsefulOrbit-Android-Agent-v0.6.0.apk
           gcloud storage cp "${prefix}/UsefulOrbit-Android-Agent-v0.6.0.apk.sha256" output/UsefulOrbit-Android-Agent-v0.6.0.apk.sha256
           gcloud storage cp "${prefix}/contract-validation.log" evidence/contract-validation.log
@@ -137,14 +137,14 @@ jobs:
 
           test "${status}" = 'SUCCESS'
           test -s output/UsefulOrbit-Android-Agent-v0.6.0.apk
-          sha256sum --check output/UsefulOrbit-Android-Agent-v0.6.0.apk.sha256
+          (cd output && sha256sum --check UsefulOrbit-Android-Agent-v0.6.0.apk.sha256)
           grep -F 'Signer #1 certificate SHA-256 digest: aee59b74a81327b07e0eea7f76831da317f9aed334a9448ce4306d2c0925d0e5' evidence/apk-signature.txt
 
       - name: Upload signed APK and evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: android-agent-v060-${{ github.run_id }}
+          name: android-agent-v060-ime-presend-${{ github.run_id }}
           path: |
             output/UsefulOrbit-Android-Agent-v0.6.0.apk
             output/UsefulOrbit-Android-Agent-v0.6.0.apk.sha256
