@@ -1,4 +1,4 @@
-name: Android Agent v0.6.5 Fresh Chat IME Recovery Build
+name: Android Signal Controller v0.7.0 Build
 
 on:
   pull_request:
@@ -12,7 +12,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: android-agent-v065-fresh-chat-ime-recovery-build
+  group: android-signal-controller-v070-build
   cancel-in-progress: true
 
 jobs:
@@ -21,7 +21,7 @@ jobs:
       github.actor == 'zoolove1' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.base.ref == 'main' &&
-      github.event.pull_request.head.ref == 'control/android-sol-v065-cloud-build'
+      github.event.pull_request.head.ref == 'control/android-signal-v070-cloud-build'
     runs-on: ubuntu-latest
     timeout-minutes: 55
     env:
@@ -31,9 +31,9 @@ jobs:
       WIF_SERVICE_ACCOUNT: miru-cloud-build@autonomy-system.iam.gserviceaccount.com
       BUILD_SERVICE_ACCOUNT: projects/autonomy-system/serviceAccounts/770537155218-compute@developer.gserviceaccount.com
       CONNECTED_REPOSITORY: projects/autonomy-system/locations/us-central1/connections/miru-private-github/repositories/useful-orbit-automation
-      PRIVATE_BRANCH: agent/android-sol-v065-fresh-chat-ime-recovery
-      BUILD_CONFIG: cloudbuild/android-agent-v065-fresh-chat-ime-recovery.yaml
-      TRIGGER_NAME: android-agent-v065-fresh-chat-ime-recovery
+      PRIVATE_BRANCH: agent/android-signal-controller-v070
+      BUILD_CONFIG: cloudbuild/android-agent-v070-signal-controller.yaml
+      TRIGGER_NAME: android-signal-controller-v070
       ARTIFACT_BUCKET: gs://autonomy-system-miru-build-artifacts
 
     steps:
@@ -64,7 +64,7 @@ jobs:
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Create or reuse bounded Android v0.6.5 build trigger
+      - name: Create or reuse bounded Android v0.7.0 build trigger
         shell: bash
         run: |
           set -euo pipefail
@@ -112,23 +112,20 @@ jobs:
           jq -n --arg status "${status}" --arg buildId "${BUILD_ID}" --arg commit "${PRIVATE_COMMIT}" \
             '{status:$status,buildId:$buildId,commit:$commit}' > evidence/control-result.json
 
-          prefix="${ARTIFACT_BUCKET}/android-agent/v0.6.5-fresh-chat-ime-recovery/${BUILD_ID}"
-          gcloud storage cp "${prefix}/UsefulOrbit-Android-Agent-v0.6.5.apk" output/UsefulOrbit-Android-Agent-v0.6.5.apk
-          gcloud storage cp "${prefix}/UsefulOrbit-Android-Agent-v0.6.5.apk.sha256" output/UsefulOrbit-Android-Agent-v0.6.5.apk.sha256
-          gcloud storage cp "${prefix}/v065-fresh-chat-patch.log" evidence/v065-fresh-chat-patch.log
-          gcloud storage cp "${prefix}/v065-fresh-chat-hardening.log" evidence/v065-fresh-chat-hardening.log
-          gcloud storage cp "${prefix}/v065-fresh-chat-validation.log" evidence/v065-fresh-chat-validation.log
+          prefix="${ARTIFACT_BUCKET}/android-agent/v0.7.0-signal-controller/${BUILD_ID}"
+          gcloud storage cp "${prefix}/UsefulOrbit-Signal-Agent-v0.7.0.apk" output/UsefulOrbit-Signal-Agent-v0.7.0.apk
+          gcloud storage cp "${prefix}/UsefulOrbit-Signal-Agent-v0.7.0.apk.sha256" output/UsefulOrbit-Signal-Agent-v0.7.0.apk.sha256
+          gcloud storage cp "${prefix}/v070-signal-validation.log" evidence/v070-signal-validation.log
           gcloud storage cp "${prefix}/android-build.log" evidence/android-build.log
           gcloud storage cp "${prefix}/apk-signature.txt" evidence/apk-signature.txt
 
           test "${status}" = 'SUCCESS'
-          test -s output/UsefulOrbit-Android-Agent-v0.6.5.apk
-          expected_hash="$(awk '{print $1}' output/UsefulOrbit-Android-Agent-v0.6.5.apk.sha256)"
-          actual_hash="$(sha256sum output/UsefulOrbit-Android-Agent-v0.6.5.apk | awk '{print $1}')"
+          test -s output/UsefulOrbit-Signal-Agent-v0.7.0.apk
+          expected_hash="$(awk '{print $1}' output/UsefulOrbit-Signal-Agent-v0.7.0.apk.sha256)"
+          actual_hash="$(sha256sum output/UsefulOrbit-Signal-Agent-v0.7.0.apk | awk '{print $1}')"
           test "${actual_hash}" = "${expected_hash}"
-          grep -F 'ANDROID_SOL_FRESH_CHAT_IME_RECOVERY_V065_PATCH_OK' evidence/v065-fresh-chat-patch.log
-          grep -F 'ANDROID_SOL_FRESH_CHAT_EVIDENCE_V065_HARDENING_OK' evidence/v065-fresh-chat-hardening.log
-          grep -F 'ANDROID_SOL_FRESH_CHAT_IME_RECOVERY_V065_VALIDATION_OK' evidence/v065-fresh-chat-validation.log
+          grep -F 'ANDROID_SIGNAL_CONTROLLER_V070_PATCH_OK' evidence/v070-signal-validation.log
+          grep -F 'ANDROID_SIGNAL_CONTROLLER_V070_VALIDATION_OK' evidence/v070-signal-validation.log
           grep -F 'BUILD SUCCESSFUL' evidence/android-build.log
           grep -F 'Signer #1 certificate SHA-256 digest: aee59b74a81327b07e0eea7f76831da317f9aed334a9448ce4306d2c0925d0e5' evidence/apk-signature.txt
 
@@ -136,16 +133,14 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: android-agent-v065-fresh-chat-ime-recovery-${{ github.run_id }}
+          name: android-signal-v070-${{ github.run_id }}
           path: |
-            output/UsefulOrbit-Android-Agent-v0.6.5.apk
-            output/UsefulOrbit-Android-Agent-v0.6.5.apk.sha256
+            output/UsefulOrbit-Signal-Agent-v0.7.0.apk
+            output/UsefulOrbit-Signal-Agent-v0.7.0.apk.sha256
             evidence/control-result.json
             evidence/build.json
             evidence/cloudbuild.log
-            evidence/v065-fresh-chat-patch.log
-            evidence/v065-fresh-chat-hardening.log
-            evidence/v065-fresh-chat-validation.log
+            evidence/v070-signal-validation.log
             evidence/android-build.log
             evidence/apk-signature.txt
             evidence/trigger.json
