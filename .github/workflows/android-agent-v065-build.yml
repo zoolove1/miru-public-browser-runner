@@ -1,4 +1,4 @@
-name: Android Signal Controller v0.7.0 Build
+name: Android Broker Control Signal v0.7.0 Deploy
 
 on:
   pull_request:
@@ -12,18 +12,18 @@ permissions:
   id-token: write
 
 concurrency:
-  group: android-signal-controller-v070-build
+  group: android-broker-control-signal-v070-deploy
   cancel-in-progress: true
 
 jobs:
-  build:
+  deploy:
     if: >-
       github.actor == 'zoolove1' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.base.ref == 'main' &&
-      github.event.pull_request.head.ref == 'control/android-signal-v070-cloud-build'
+      github.event.pull_request.head.ref == 'control/android-broker-v070-cloud-build'
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 40
     env:
       PROJECT_ID: autonomy-system
       REGION: us-central1
@@ -31,9 +31,9 @@ jobs:
       WIF_SERVICE_ACCOUNT: miru-cloud-build@autonomy-system.iam.gserviceaccount.com
       BUILD_SERVICE_ACCOUNT: projects/autonomy-system/serviceAccounts/770537155218-compute@developer.gserviceaccount.com
       CONNECTED_REPOSITORY: projects/autonomy-system/locations/us-central1/connections/miru-private-github/repositories/useful-orbit-automation
-      PRIVATE_BRANCH: agent/android-signal-controller-v070
-      BUILD_CONFIG: cloudbuild/android-agent-v070-signal-controller.yaml
-      TRIGGER_NAME: android-signal-controller-v070
+      PRIVATE_BRANCH: agent/android-signal-broker-v070-safe
+      BUILD_CONFIG: cloudbuild/android-broker-control-signal-v070.yaml
+      TRIGGER_NAME: android-broker-control-signal-v070
       ARTIFACT_BUCKET: gs://autonomy-system-miru-build-artifacts
 
     steps:
@@ -64,11 +64,11 @@ jobs:
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Create or reuse bounded Android v0.7.0 build trigger
+      - name: Create or reuse bounded broker deployment trigger
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p evidence output
+          mkdir -p evidence
           if ! gcloud builds triggers describe "${TRIGGER_NAME}" --project="${PROJECT_ID}" --region="${REGION}" >/dev/null 2>&1; then
             gcloud builds triggers create manual \
               --project="${PROJECT_ID}" \
@@ -98,7 +98,7 @@ jobs:
           echo "BUILD_ID=${BUILD_ID}" >> "${GITHUB_ENV}"
 
           status='UNKNOWN'
-          for _ in $(seq 1 270); do
+          for _ in $(seq 1 210); do
             status="$(gcloud builds describe "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(status)')"
             case "${status}" in
               SUCCESS|FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED) break ;;
@@ -108,41 +108,54 @@ jobs:
 
           gcloud builds describe "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" --format=json > evidence/build.json
           gcloud builds log "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" > evidence/cloudbuild.log 2>&1 || true
-
           jq -n --arg status "${status}" --arg buildId "${BUILD_ID}" --arg commit "${PRIVATE_COMMIT}" \
             '{status:$status,buildId:$buildId,commit:$commit}' > evidence/control-result.json
 
-          prefix="${ARTIFACT_BUCKET}/android-agent/v0.7.0-signal-controller/${BUILD_ID}"
-          gcloud storage cp "${prefix}/UsefulOrbit-Signal-Agent-v0.7.0.apk" output/UsefulOrbit-Signal-Agent-v0.7.0.apk
-          gcloud storage cp "${prefix}/UsefulOrbit-Signal-Agent-v0.7.0.apk.sha256" output/UsefulOrbit-Signal-Agent-v0.7.0.apk.sha256
-          gcloud storage cp "${prefix}/v070-signal-validation.log" evidence/v070-signal-validation.log
-          gcloud storage cp "${prefix}/android-build.log" evidence/android-build.log
-          gcloud storage cp "${prefix}/apk-signature.txt" evidence/apk-signature.txt
+          prefix="${ARTIFACT_BUCKET}/android-broker/v0.7.0-signal/${BUILD_ID}"
+          for file in deploy-result.json validation.log javascript-syntax.log combined-source.sha256 deploy.stdout deploy.stderr deploy.rc backup-result.json; do
+            gcloud storage cp "${prefix}/${file}" "evidence/${file}" || true
+          done
 
           test "${status}" = 'SUCCESS'
-          test -s output/UsefulOrbit-Signal-Agent-v0.7.0.apk
-          expected_hash="$(awk '{print $1}' output/UsefulOrbit-Signal-Agent-v0.7.0.apk.sha256)"
-          actual_hash="$(sha256sum output/UsefulOrbit-Signal-Agent-v0.7.0.apk | awk '{print $1}')"
-          test "${actual_hash}" = "${expected_hash}"
-          grep -F 'ANDROID_SIGNAL_CONTROLLER_V070_PATCH_OK' evidence/v070-signal-validation.log
-          grep -F 'ANDROID_SIGNAL_CONTROLLER_V070_VALIDATION_OK' evidence/v070-signal-validation.log
-          grep -F 'BUILD SUCCESSFUL' evidence/android-build.log
-          grep -F 'Signer #1 certificate SHA-256 digest: aee59b74a81327b07e0eea7f76831da317f9aed334a9448ce4306d2c0925d0e5' evidence/apk-signature.txt
+          test -s evidence/deploy-result.json
+          grep -F 'ANDROID_CONTROL_SIGNAL_V070_STATIC_VALIDATION_OK' evidence/validation.log
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          value = json.loads(Path('evidence/deploy-result.json').read_text())
+          assert value.get('ok') is True, value
+          assert value.get('status') == 'ANDROID_CONTROL_SIGNAL_V070_DEPLOYED_AND_WAIT_POLL_PASSED', value
+          assert value.get('webAppUrlPreserved') is True, value
+          assert value.get('deviceKeyPreserved') is True, value
+          health = value.get('health') or {}
+          assert health.get('explicitUserStopVersion') == '0.6.4', health
+          assert health.get('controlSignalReady') is True, health
+          assert health.get('controlSignalProtocolVersion') == '0.7.0', health
+          assert health.get('controlSignalActions') == ['EXECUTE', 'WAIT', 'STOP'], health
+          poll = value.get('controlPoll') or {}
+          assert poll.get('status') == 'ANDROID_CONTROL_SIGNAL', poll
+          assert poll.get('action') == 'WAIT', poll
+          assert poll.get('consumedTo') is None, poll
+          print('ANDROID_CONTROL_SIGNAL_V070_PUBLIC_RELAY_VERIFIED')
+          PY
 
-      - name: Upload signed APK and evidence
+      - name: Upload sanitized deployment evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: android-signal-v070-${{ github.run_id }}
+          name: android-broker-control-signal-v070-${{ github.run_id }}
           path: |
-            output/UsefulOrbit-Signal-Agent-v0.7.0.apk
-            output/UsefulOrbit-Signal-Agent-v0.7.0.apk.sha256
             evidence/control-result.json
             evidence/build.json
             evidence/cloudbuild.log
-            evidence/v070-signal-validation.log
-            evidence/android-build.log
-            evidence/apk-signature.txt
+            evidence/deploy-result.json
+            evidence/validation.log
+            evidence/javascript-syntax.log
+            evidence/combined-source.sha256
+            evidence/deploy.stdout
+            evidence/deploy.stderr
+            evidence/deploy.rc
+            evidence/backup-result.json
             evidence/trigger.json
             evidence/trigger-run.json
             evidence/trigger-run.stderr
