@@ -81,8 +81,8 @@ jobs:
               --no-require-approval
           fi
           gcloud builds triggers describe "${TRIGGER_NAME}" --project="${PROJECT_ID}" --region="${REGION}" --format=json > evidence/trigger.json
-          jq -e --arg branch "^${PRIVATE_BRANCH}$" '.repositoryEventConfig.push.branch == $branch' evidence/trigger.json
-          jq -e --arg config "${BUILD_CONFIG}" '.filename == $config' evidence/trigger.json
+          jq -e --arg branch "refs/heads/${PRIVATE_BRANCH}" '.gitFileSource.revision == $branch and .sourceToBuild.ref == $branch' evidence/trigger.json
+          jq -e --arg config "${BUILD_CONFIG}" '.gitFileSource.path == $config' evidence/trigger.json
 
       - name: Run exact clean source commit and wait
         shell: bash
