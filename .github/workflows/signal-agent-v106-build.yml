@@ -1,4 +1,4 @@
-name: Signal Agent v1.0.7 Read-only Diagnostic Build
+name: Signal Agent v1.0.7 Read-only Diagnostic R3 Build
 
 on:
   pull_request:
@@ -12,7 +12,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: signal-agent-v107-diagnostic-build
+  group: signal-agent-v107-diagnostic-r3-build
   cancel-in-progress: true
 
 jobs:
@@ -84,7 +84,7 @@ jobs:
           jq -e --arg branch "refs/heads/${PRIVATE_BRANCH}" '.gitFileSource.revision == $branch and .sourceToBuild.ref == $branch' evidence/trigger.json
           jq -e --arg config "${BUILD_CONFIG}" '.gitFileSource.path == $config' evidence/trigger.json
 
-      - name: Run exact diagnostic source commit and wait
+      - name: Run exact diagnostic R3 source commit and wait
         shell: bash
         run: |
           set -euo pipefail
@@ -110,30 +110,30 @@ jobs:
           jq -n --arg status "${status}" --arg buildId "${BUILD_ID}" --arg commit "${PRIVATE_COMMIT}" \
             '{status:$status,buildId:$buildId,commit:$commit}' > evidence/control-result.json
 
-          prefix="${ARTIFACT_BUCKET}/android-agent/signal-v107-readonly-diagnostic/${BUILD_ID}"
-          gcloud storage cp "${prefix}/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag1.apk" output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag1.apk
-          gcloud storage cp "${prefix}/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag1.apk.sha256" output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag1.apk.sha256
-          gcloud storage cp "${prefix}/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag1-source.tar.gz" output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag1-source.tar.gz
+          prefix="${ARTIFACT_BUCKET}/android-agent/signal-v107-readonly-diagnostic-r3/${BUILD_ID}"
+          gcloud storage cp "${prefix}/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk" output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk
+          gcloud storage cp "${prefix}/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk.sha256" output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk.sha256
+          gcloud storage cp "${prefix}/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2-source.tar.gz" output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2-source.tar.gz
           gcloud storage cp "${prefix}/diagnostic-build.log" evidence/diagnostic-build.log
           gcloud storage cp "${prefix}/diagnostic-signature.txt" evidence/diagnostic-signature.txt
 
           test "${status}" = 'SUCCESS'
-          test -s output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag1.apk
-          expected_hash="$(awk '{print $1}' output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag1.apk.sha256)"
-          actual_hash="$(sha256sum output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag1.apk | awk '{print $1}')"
+          test -s output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk
+          expected_hash="$(awk '{print $1}' output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk.sha256)"
+          actual_hash="$(sha256sum output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk | awk '{print $1}')"
           test "${actual_hash}" = "${expected_hash}"
           grep -F 'BUILD SUCCESSFUL' evidence/diagnostic-build.log
           grep -F 'Signer #1 certificate SHA-256 digest: aee59b74a81327b07e0eea7f76831da317f9aed334a9448ce4306d2c0925d0e5' evidence/diagnostic-signature.txt
 
-      - name: Upload read-only diagnostic and evidence
+      - name: Upload read-only diagnostic R3 and evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: signal-agent-v107-diagnostic-${{ github.run_id }}
+          name: signal-agent-v107-diagnostic-r3-${{ github.run_id }}
           path: |
-            output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag1.apk
-            output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag1.apk.sha256
-            output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag1-source.tar.gz
+            output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk
+            output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk.sha256
+            output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2-source.tar.gz
             evidence/control-result.json
             evidence/build.json
             evidence/cloudbuild.log
