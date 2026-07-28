@@ -49,7 +49,7 @@ jobs:
           set -euo pipefail
           private_commit="$(tr -d '\r\n[:space:]' < control/signal-lite-v110-repair-commit.txt)"
           [[ "${private_commit}" =~ ^[0-9a-f]{40}$ ]]
-          test "${private_commit}" = 'e408b9029ae7bb2c066618e43e20fa1563198fac'
+          test "${private_commit}" = '71726a55b2e4e06fe3db721ab0dc8dae0186d025'
           echo "PRIVATE_COMMIT=${private_commit}" >> "${GITHUB_ENV}"
 
       - name: Obtain short-lived Google credentials through WIF
@@ -85,7 +85,7 @@ jobs:
           jq -e --arg branch "refs/heads/${PRIVATE_BRANCH}" '.gitFileSource.revision == $branch and .sourceToBuild.ref == $branch' evidence/trigger.json
           jq -e --arg config "${BUILD_CONFIG}" '.gitFileSource.path == $config' evidence/trigger.json
 
-      - name: Run exact repair commit and collect minimal evidence
+      - name: Run exact repair commit and collect APK
         shell: bash
         run: |
           set -euo pipefail
@@ -113,21 +113,26 @@ jobs:
             '{status:$status,buildId:$buildId,commit:$commit}' > evidence/control-result.json
 
           prefix="${ARTIFACT_BUCKET}/android-agent/signal-lite-v110-repair/${BUILD_ID}"
-          gcloud storage cp "${prefix}/signal-lite-v110-repair.log" evidence/signal-lite-v110-repair.log || true
-          gcloud storage cp "${prefix}/debug-apk.sha256" evidence/debug-apk.sha256 || true
+          gcloud storage cp "${prefix}/signal-lite-v110-repair.log" evidence/signal-lite-v110-repair.log
+          gcloud storage cp "${prefix}/debug-apk.sha256" evidence/debug-apk.sha256
+          gcloud storage cp "${prefix}/MIRU-Signal-Agent-Lite-v1.1.0-debug.apk" evidence/MIRU-Signal-Agent-Lite-v1.1.0-debug.apk
 
           test "${status}" = 'SUCCESS'
           test -s evidence/signal-lite-v110-repair.log
           test -s evidence/debug-apk.sha256
+          test -s evidence/MIRU-Signal-Agent-Lite-v1.1.0-debug.apk
           grep -F 'BUILD SUCCESSFUL' evidence/signal-lite-v110-repair.log
           grep -E '^[0-9a-f]{64}  app/build/outputs/apk/debug/app-debug.apk$' evidence/debug-apk.sha256
+          apk_sha="$(awk '{print $1}' evidence/debug-apk.sha256)"
+          echo "${apk_sha}  evidence/MIRU-Signal-Agent-Lite-v1.1.0-debug.apk" | sha256sum --check --strict
 
-      - name: Upload minimal repair evidence
+      - name: Upload debug APK and build evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: signal-lite-v110-repair-${{ github.run_id }}
+          name: signal-lite-v110-debug-apk-${{ github.run_id }}
           path: |
+            evidence/MIRU-Signal-Agent-Lite-v1.1.0-debug.apk
             evidence/control-result.json
             evidence/build.json
             evidence/cloudbuild.log
@@ -137,4 +142,4 @@ jobs:
             evidence/trigger-run.json
             evidence/trigger-run.stderr
           if-no-files-found: warn
-          retention-days: 2
+          retention-days: 7
