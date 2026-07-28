@@ -1,4 +1,4 @@
-name: Signal Agent v1.0.6 Document-bound Build
+name: Signal Agent v1.0.6 Document-window-bound Build
 
 on:
   pull_request:
@@ -113,7 +113,7 @@ jobs:
           jq -n --arg status "${status}" --arg buildId "${BUILD_ID}" --arg commit "${PRIVATE_COMMIT}" \
             '{status:$status,buildId:$buildId,commit:$commit}' > evidence/control-result.json
 
-          prefix="${ARTIFACT_BUCKET}/android-agent/signal-v106-document-bound/${BUILD_ID}"
+          prefix="${ARTIFACT_BUCKET}/android-agent/signal-v106-document-window-bound/${BUILD_ID}"
           gcloud storage cp "${prefix}/UsefulOrbit-Signal-Agent-v1.0.6.apk" output/UsefulOrbit-Signal-Agent-v1.0.6.apk
           gcloud storage cp "${prefix}/UsefulOrbit-Signal-Agent-v1.0.6.apk.sha256" output/UsefulOrbit-Signal-Agent-v1.0.6.apk.sha256
           gcloud storage cp "${prefix}/UsefulOrbit-Signal-Agent-v1.0.6-source.tar.gz" output/UsefulOrbit-Signal-Agent-v1.0.6-source.tar.gz
