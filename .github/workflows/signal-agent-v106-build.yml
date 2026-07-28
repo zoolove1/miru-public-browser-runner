@@ -111,16 +111,16 @@ jobs:
             '{status:$status,buildId:$buildId,commit:$commit}' > evidence/control-result.json
 
           prefix="${ARTIFACT_BUCKET}/android-agent/signal-v107-readonly-diagnostic-r3/${BUILD_ID}"
-          gcloud storage cp "${prefix}/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk" output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk
-          gcloud storage cp "${prefix}/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk.sha256" output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk.sha256
-          gcloud storage cp "${prefix}/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2-source.tar.gz" output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2-source.tar.gz
+          gcloud storage cp "${prefix}/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag3.apk" output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag3.apk
+          gcloud storage cp "${prefix}/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag3.apk.sha256" output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag3.apk.sha256
+          gcloud storage cp "${prefix}/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag3-source.tar.gz" output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag3-source.tar.gz
           gcloud storage cp "${prefix}/diagnostic-build.log" evidence/diagnostic-build.log
           gcloud storage cp "${prefix}/diagnostic-signature.txt" evidence/diagnostic-signature.txt
 
           test "${status}" = 'SUCCESS'
-          test -s output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk
-          expected_hash="$(awk '{print $1}' output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk.sha256)"
-          actual_hash="$(sha256sum output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk | awk '{print $1}')"
+          test -s output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag3.apk
+          expected_hash="$(awk '{print $1}' output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag3.apk.sha256)"
+          actual_hash="$(sha256sum output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag3.apk | awk '{print $1}')"
           test "${actual_hash}" = "${expected_hash}"
           grep -F 'BUILD SUCCESSFUL' evidence/diagnostic-build.log
           grep -F 'Signer #1 certificate SHA-256 digest: aee59b74a81327b07e0eea7f76831da317f9aed334a9448ce4306d2c0925d0e5' evidence/diagnostic-signature.txt
@@ -131,9 +131,9 @@ jobs:
         with:
           name: signal-agent-v107-diagnostic-r3-${{ github.run_id }}
           path: |
-            output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk
-            output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2.apk.sha256
-            output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag2-source.tar.gz
+            output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag3.apk
+            output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag3.apk.sha256
+            output/UsefulOrbit-ChatGPT-Diagnostic-v1.0.7-diag3-source.tar.gz
             evidence/control-result.json
             evidence/build.json
             evidence/cloudbuild.log
