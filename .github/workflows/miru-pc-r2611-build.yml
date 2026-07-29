@@ -1,4 +1,5 @@
 name: MIRU PC R2.6.11 Cloud Build Package
+# synchronized after draft PR creation to force the bounded build-only relay
 
 on:
   pull_request:
