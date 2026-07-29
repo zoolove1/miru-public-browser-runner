@@ -57,7 +57,7 @@ jobs:
           set -euo pipefail
           private_commit="$(tr -d '\r\n[:space:]' < control/miru-pc-r2611-commit.txt)"
           [[ "${private_commit}" =~ ^[0-9a-f]{40}$ ]]
-          test "${private_commit}" = 'ef56e33a9d871c245287a0a9c1379f8bce6ac20e'
+          test "${private_commit}" = 'eb78198ca2f518b0912697939b4b567bbec28073'
           echo "PRIVATE_COMMIT=${private_commit}" >> "${GITHUB_ENV}"
 
       - name: Obtain short-lived Google credentials through WIF
