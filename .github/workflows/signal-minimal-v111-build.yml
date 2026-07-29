@@ -49,7 +49,7 @@ jobs:
           set -euo pipefail
           private_commit="$(tr -d '\r\n[:space:]' < control/signal-minimal-v111-commit.txt)"
           [[ "${private_commit}" =~ ^[0-9a-f]{40}$ ]]
-          test "${private_commit}" = '0210e0cd3be51efc6aa3f752d9ebd827e4d2b6a6'
+          test "${private_commit}" = '01b42486adbbcc48b685122b2c9e2bd8e32217b7'
           echo "PRIVATE_COMMIT=${private_commit}" >> "${GITHUB_ENV}"
 
       - name: Obtain short-lived Google credentials through WIF
