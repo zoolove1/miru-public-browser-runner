@@ -12,7 +12,7 @@ permissions:
 jobs:
   preflight:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     env:
       PROJECT_ID: autonomy-system
       PROJECT_NUMBER: "770537155218"
@@ -70,7 +70,58 @@ jobs:
             access_state="ACCESS_FAILED_OTHER"
           fi
 
-          export default_sa api_state describe_state access_state
+          cat > evidence/cloudbuild-secret-probe.yaml <<'YAML'
+          steps:
+            - name: gcr.io/cloud-builders/gcloud
+              entrypoint: bash
+              secretEnv:
+                - CLASPRC_JSON
+              args:
+                - -c
+                - test -n "$$CLASPRC_JSON"
+          availableSecrets:
+            secretManager:
+              - versionName: projects/770537155218/secrets/CLASPRC_JSON/versions/latest
+                env: CLASPRC_JSON
+          options:
+            logging: CLOUD_LOGGING_ONLY
+          timeout: 120s
+          YAML
+
+          cloud_build_secret_state="UNKNOWN"
+          build_id=""
+          if build_id="$(gcloud builds submit --no-source --async \
+              --project="${PROJECT_ID}" \
+              --config=evidence/cloudbuild-secret-probe.yaml \
+              --format='value(id)' 2>evidence/build-submit.err)" && [[ -n "${build_id}" ]]; then
+            for _ in $(seq 1 40); do
+              build_status="$(gcloud builds describe "${build_id}" --project="${PROJECT_ID}" --format='value(status)' 2>/dev/null || true)"
+              case "${build_status}" in
+                SUCCESS)
+                  cloud_build_secret_state="ACCESS_GRANTED"
+                  break
+                  ;;
+                FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED)
+                  cloud_build_secret_state="ACCESS_DENIED_OR_BUILD_FAILED"
+                  break
+                  ;;
+              esac
+              sleep 3
+            done
+            if [[ "${cloud_build_secret_state}" == "UNKNOWN" ]]; then
+              cloud_build_secret_state="PROBE_TIMEOUT"
+            fi
+          else
+            if grep -qiE 'PERMISSION_DENIED|secretmanager.versions.access|does not have permission' evidence/build-submit.err; then
+              cloud_build_secret_state="ACCESS_PERMISSION_DENIED_AT_SUBMIT"
+            elif grep -qi 'NOT_FOUND' evidence/build-submit.err; then
+              cloud_build_secret_state="SECRET_NOT_FOUND_AT_SUBMIT"
+            else
+              cloud_build_secret_state="BUILD_SUBMIT_FAILED_OTHER"
+            fi
+          fi
+
+          export default_sa api_state describe_state access_state cloud_build_secret_state build_id
           python3 - <<'PY'
           import json, os
           result = {
@@ -80,8 +131,10 @@ jobs:
               "wifServiceAccount": os.environ["WIF_SERVICE_ACCOUNT"],
               "defaultCloudBuildServiceAccount": os.environ["default_sa"],
               "secretName": os.environ["SECRET_NAME"],
-              "secretMetadata": os.environ["describe_state"],
+              "secretMetadataFromWif": os.environ["describe_state"],
               "secretPayloadAccessFromWifServiceAccount": os.environ["access_state"],
+              "secretPayloadAccessFromDefaultCloudBuildServiceAccount": os.environ["cloud_build_secret_state"],
+              "probeBuildId": os.environ["build_id"] or None,
               "secretPayloadWasPrinted": False,
               "externalEffects": False,
           }
