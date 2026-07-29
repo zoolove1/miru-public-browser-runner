@@ -70,17 +70,18 @@ jobs:
             access_state="ACCESS_FAILED_OTHER"
           fi
 
+          export default_sa api_state describe_state access_state
           python3 - <<'PY'
           import json, os
           result = {
               "projectId": os.environ["PROJECT_ID"],
               "projectNumber": os.environ["PROJECT_NUMBER"],
-              "bloggerApi": os.environ.get("api_state", "UNKNOWN"),
+              "bloggerApi": os.environ["api_state"],
               "wifServiceAccount": os.environ["WIF_SERVICE_ACCOUNT"],
-              "defaultCloudBuildServiceAccount": os.environ.get("default_sa", ""),
+              "defaultCloudBuildServiceAccount": os.environ["default_sa"],
               "secretName": os.environ["SECRET_NAME"],
-              "secretMetadata": os.environ.get("describe_state", "UNKNOWN"),
-              "secretPayloadAccessFromWifServiceAccount": os.environ.get("access_state", "UNKNOWN"),
+              "secretMetadata": os.environ["describe_state"],
+              "secretPayloadAccessFromWifServiceAccount": os.environ["access_state"],
               "secretPayloadWasPrinted": False,
               "externalEffects": False,
           }
@@ -88,8 +89,6 @@ jobs:
               json.dump(result, f, ensure_ascii=False, indent=2)
           print(json.dumps(result, ensure_ascii=False, indent=2))
           PY
-        env:
-          api_state: ${{ env.api_state }}
 
       - name: Upload sanitized evidence
         if: ${{ always() }}
