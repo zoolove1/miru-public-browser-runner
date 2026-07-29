@@ -53,7 +53,7 @@ jobs:
           python tools/repack_miru_pc_r26121_recovery.py \
             evidence/base-r2612.zip \
             evidence/MIRU_PC_R2.6.12.1_RECOVERY_WINDOWS_VERIFIED.zip
-          sha256sum --check evidence/MIRU_PC_R2.6.12.1_RECOVERY_WINDOWS_VERIFIED.zip.sha256
+          (cd evidence && sha256sum --check MIRU_PC_R2.6.12.1_RECOVERY_WINDOWS_VERIFIED.zip.sha256)
       - uses: actions/upload-artifact@v4
         with:
           name: miru-pc-r26121-recovery-repack-${{ github.run_id }}
