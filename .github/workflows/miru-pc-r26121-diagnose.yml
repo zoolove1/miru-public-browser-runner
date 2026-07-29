@@ -6,6 +6,10 @@ on:
       - control/miru-pc-r2612-build-20260729
     paths:
       - '.github/workflows/miru-pc-r26121-diagnose.yml'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/miru-pc-r26121-diagnose.yml'
 
 permissions:
   contents: read
