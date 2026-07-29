@@ -1,15 +1,9 @@
-name: MIRU PC R2.6.11 Cloud Build Package
-# bounded owner-only relay; never merge this workflow
+name: MIRU PC R2.6.11 Cloud Build and Windows Validation
 
 on:
   push:
     branches:
       - control/miru-pc-r2611-build-20260729
-    paths:
-      - '.github/workflows/miru-pc-r2611-build.yml'
-      - 'control/miru-pc-r2611-commit.txt'
-  pull_request:
-    types: [opened, synchronize, reopened]
     paths:
       - '.github/workflows/miru-pc-r2611-build.yml'
       - 'control/miru-pc-r2611-commit.txt'
@@ -24,13 +18,7 @@ concurrency:
 
 jobs:
   build:
-    if: >-
-      github.actor == 'zoolove1' &&
-      ((github.event_name == 'push' && github.ref == 'refs/heads/control/miru-pc-r2611-build-20260729') ||
-       (github.event_name == 'pull_request' &&
-        github.event.pull_request.head.repo.full_name == github.repository &&
-        github.event.pull_request.base.ref == 'main' &&
-        github.event.pull_request.head.ref == 'control/miru-pc-r2611-build-20260729'))
+    if: github.actor == 'zoolove1' && github.ref == 'refs/heads/control/miru-pc-r2611-build-20260729'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -58,7 +46,7 @@ jobs:
           set -euo pipefail
           private_commit="$(tr -d '\r\n[:space:]' < control/miru-pc-r2611-commit.txt)"
           [[ "${private_commit}" =~ ^[0-9a-f]{40}$ ]]
-          test "${private_commit}" = '5654e86ce3d53565ca6d14920624774c7f71a58c'
+          test "${private_commit}" = 'ef56e33a9d871c245287a0a9c1379f8bce6ac20e'
           echo "PRIVATE_COMMIT=${private_commit}" >> "${GITHUB_ENV}"
 
       - name: Obtain short-lived Google credentials through WIF
@@ -128,16 +116,11 @@ jobs:
           gcloud storage cp "${prefix}/VALIDATION_REPORT.txt" evidence/VALIDATION_REPORT.txt
 
           test "${status}" = 'SUCCESS'
-          test -s evidence/MIRU_PC_R2.6.11_STANDALONE_FINAL.zip
-          test -s evidence/MIRU_PC_R2.6.11_STANDALONE_FINAL.zip.sha256
-          test -s evidence/SOURCE_MANIFEST.sha256
-          test -s evidence/VALIDATION_REPORT.txt
           grep -Fx 'MIRU_PC_R2611_CLOUD_BUILD=PASS' evidence/VALIDATION_REPORT.txt
           grep -Fx "SOURCE_COMMIT=${PRIVATE_COMMIT}" evidence/VALIDATION_REPORT.txt
-          sha256sum --check --strict evidence/MIRU_PC_R2.6.11_STANDALONE_FINAL.zip.sha256
+          (cd evidence && sha256sum --check --strict MIRU_PC_R2.6.11_STANDALONE_FINAL.zip.sha256)
 
       - name: Upload final ZIP and build evidence
-        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: miru-pc-r2611-final-${{ github.run_id }}
@@ -152,5 +135,40 @@ jobs:
             evidence/trigger.json
             evidence/trigger-run.json
             evidence/trigger-run.stderr
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
+
+  windows-e2e:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download exact Cloud Build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: miru-pc-r2611-final-${{ github.run_id }}
+          path: evidence
+
+      - name: Run Windows static, termination, and rollback tests
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:GITHUB_WORKSPACE 'evidence\MIRU_PC_R2.6.11_STANDALONE_FINAL.zip'
+          $extract = Join-Path $env:GITHUB_WORKSPACE 'extracted'
+          Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
+          $patchRoot = Get-ChildItem -LiteralPath $extract -Directory -Recurse |
+            Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName '02_TEST_PATCH_STATIC.cmd') } |
+            Select-Object -First 1 -ExpandProperty FullName
+          if ([string]::IsNullOrWhiteSpace($patchRoot)) { throw 'Patch root not found in final ZIP.' }
+
+          $tests = @(
+            'payload\scripts\Test-MiruPatchStatic.ps1',
+            'payload\scripts\Test-MiruTerminationPropagation.ps1',
+            'payload\scripts\Test-MiruInstallerRollback.ps1'
+          )
+          foreach ($relative in $tests) {
+            $script = Join-Path $patchRoot $relative
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -PatchRoot $patchRoot
+            if ($LASTEXITCODE -ne 0) { throw "Windows validation failed: $relative exit=$LASTEXITCODE" }
+          }
+          Write-Host 'MIRU_PC_R2611_WINDOWS_E2E=PASS'
