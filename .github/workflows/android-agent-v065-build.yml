@@ -1,4 +1,4 @@
-name: Android Broker Control Signal v0.7.0 Deploy
+name: Android Broker Device Key Encrypted Recovery
 
 on:
   pull_request:
@@ -12,44 +12,33 @@ permissions:
   id-token: write
 
 concurrency:
-  group: android-broker-control-signal-v070-deploy
+  group: android-broker-device-key-encrypted-recovery
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  recover:
     if: >-
       github.actor == 'zoolove1' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.ref == 'control/android-broker-v070-cloud-build'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 15
     env:
       PROJECT_ID: autonomy-system
-      REGION: us-central1
       WIF_PROVIDER: projects/770537155218/locations/global/workloadIdentityPools/miru-github/providers/miru-public-runner
       WIF_SERVICE_ACCOUNT: miru-cloud-build@autonomy-system.iam.gserviceaccount.com
-      BUILD_SERVICE_ACCOUNT: projects/autonomy-system/serviceAccounts/770537155218-compute@developer.gserviceaccount.com
-      CONNECTED_REPOSITORY: projects/autonomy-system/locations/us-central1/connections/miru-private-github/repositories/useful-orbit-automation
-      PRIVATE_BRANCH: agent/android-signal-broker-v070-safe
-      BUILD_CONFIG: cloudbuild/android-broker-control-signal-v070.yaml
-      TRIGGER_NAME: android-broker-control-signal-v070
-      ARTIFACT_BUCKET: gs://autonomy-system-miru-build-artifacts
+      SOURCE_BUILD_ID: 767a7488-b505-40b8-92ad-188aceb50098
+      SOURCE_URI: gs://autonomy-system-miru-build-artifacts/android-broker/v0.7.0-signal/767a7488-b505-40b8-92ad-188aceb50098/before-content.json
+      BROKER_URL: https://script.google.com/macros/s/AKfycbxUD2uI5jrD_IHJSnEmf23Gf37BhaY09aPcxAtIp4H__8C_QKKfUZ_NpR5mi0ZVH--O/exec
+      PUBLIC_KEY_B64: LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQm9qQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FZOEFNSUlCaWdLQ0FZRUFsV2E1RTE2Y2tmSHhRbzRVdnZwMwpvNEg1WmlKbU5PRGk4UkpqcGo2bVRBL2tLc3F6aW9NeVlWL2RBcjJybWlCbFdJcXZTNFJaOVROK1l3Zy84c2FFCjdnYnV2Z0ZjZFBXWDBLK2lKKzJIZ3JZRFdOdjYrWG5USHQwN0xQdUN1SlMwZlZhdTF0aHpaekpEYWcvaHZkcFUKUnV0b0NZWTNoWW5xdHgvMW0ybFY2ZmhvdHpxT2tSbUZYbGJhUC84TTB3MlJaTW5Tc3lxQ1BsMzBycmZqb3dyWAorTnBjSzN2TFZ5QW53NDMva0k2ZkJ5ZzYvNVBRUEIxaXkrRFNISWEyZ0wxTXgwaUtVWnh5RGNLM2pCRjZJZDk0CnZheWdsQUhleE43Qm93WGloN01lNmswZXV4eXBPZFY5ODhNWEdHQkFjSlNQUmk4dW5obEU0WWN1cTA3UW9OM0gKTGVrNG4wVmI4aGVMbHRDNzdaWEZBUm1pL0t1OTZjdkZVSTFiUVBGL3N2TDc4bS9PaHNLTjVYZzIrNEFmYllQNgp3V0dOcTVlK1hZaVpQb3F0eTRVMzMyMDhyWEROZ2FJSUltV2xCbXdWcFltUVFZNTdwRUt2ejVoOUNFdG5QVFg1CmQ1VERTUUcyQll5NkRHREYxeTNOczdFWjl6Z3lGK2NXWS9oT2F5Ly9tWkloQWdNQkFBRT0KLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg==
 
     steps:
-      - name: Check out isolated public control branch
+      - name: Check out isolated recovery branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           persist-credentials: false
-
-      - name: Validate exact private commit marker
-        shell: bash
-        run: |
-          set -euo pipefail
-          private_commit="$(tr -d '\r\n[:space:]' < control/android-v065-build-commit.txt)"
-          [[ "${private_commit}" =~ ^[0-9a-f]{40}$ ]]
-          echo "PRIVATE_COMMIT=${private_commit}" >> "${GITHUB_ENV}"
 
       - name: Obtain short-lived Google credentials through WIF
         uses: google-github-actions/auth@v2
@@ -64,100 +53,66 @@ jobs:
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Create or reuse bounded broker deployment trigger
+      - name: Recover and encrypt device key
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p evidence
-          if ! gcloud builds triggers describe "${TRIGGER_NAME}" --project="${PROJECT_ID}" --region="${REGION}" >/dev/null 2>&1; then
-            gcloud builds triggers create manual \
-              --project="${PROJECT_ID}" \
-              --region="${REGION}" \
-              --name="${TRIGGER_NAME}" \
-              --repository="${CONNECTED_REPOSITORY}" \
-              --branch="${PRIVATE_BRANCH}" \
-              --build-config="${BUILD_CONFIG}" \
-              --service-account="${BUILD_SERVICE_ACCOUNT}" \
-              --no-require-approval
-          fi
-          gcloud builds triggers describe "${TRIGGER_NAME}" --project="${PROJECT_ID}" --region="${REGION}" --format=json > evidence/trigger.json
+          umask 077
+          mkdir -p recovery
+          gcloud storage cp "${SOURCE_URI}" recovery/before-content.json >/dev/null
+          printf '%s' "${PUBLIC_KEY_B64}" | base64 --decode > recovery/public.pem
 
-      - name: Run exact private commit and wait
-        shell: bash
-        run: |
-          set -euo pipefail
-          gcloud builds triggers run "${TRIGGER_NAME}" \
-            --project="${PROJECT_ID}" \
-            --region="${REGION}" \
-            --sha="${PRIVATE_COMMIT}" \
-            --quiet \
-            --format=json > evidence/trigger-run.json 2> evidence/trigger-run.stderr
-
-          BUILD_ID="$(jq -r '.metadata.build.id // .metadata.buildId // .id // empty' evidence/trigger-run.json)"
-          test -n "${BUILD_ID}"
-          echo "BUILD_ID=${BUILD_ID}" >> "${GITHUB_ENV}"
-
-          status='UNKNOWN'
-          for _ in $(seq 1 210); do
-            status="$(gcloud builds describe "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(status)')"
-            case "${status}" in
-              SUCCESS|FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED) break ;;
-            esac
-            sleep 10
-          done
-
-          gcloud builds describe "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" --format=json > evidence/build.json
-          gcloud builds log "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" > evidence/cloudbuild.log 2>&1 || true
-          jq -n --arg status "${status}" --arg buildId "${BUILD_ID}" --arg commit "${PRIVATE_COMMIT}" \
-            '{status:$status,buildId:$buildId,commit:$commit}' > evidence/control-result.json
-
-          prefix="${ARTIFACT_BUCKET}/android-broker/v0.7.0-signal/${BUILD_ID}"
-          for file in deploy-result.json validation.log javascript-syntax.log combined-source.sha256 deploy.stdout deploy.stderr deploy.rc backup-result.json; do
-            gcloud storage cp "${prefix}/${file}" "evidence/${file}" || true
-          done
-
-          test "${status}" = 'SUCCESS'
-          test -s evidence/deploy-result.json
-          grep -F 'ANDROID_CONTROL_SIGNAL_V070_STATIC_VALIDATION_OK' evidence/validation.log
           python - <<'PY'
           import json
+          import re
           from pathlib import Path
-          value = json.loads(Path('evidence/deploy-result.json').read_text())
-          assert value.get('ok') is True, value
-          assert value.get('status') == 'ANDROID_CONTROL_SIGNAL_V070_DEPLOYED_AND_WAIT_POLL_PASSED', value
-          assert value.get('webAppUrlPreserved') is True, value
-          assert value.get('deviceKeyPreserved') is True, value
-          health = value.get('health') or {}
-          assert health.get('explicitUserStopVersion') == '0.6.4', health
-          assert health.get('controlSignalReady') is True, health
-          assert health.get('controlSignalProtocolVersion') == '0.7.0', health
-          assert health.get('controlSignalActions') == ['EXECUTE', 'WAIT', 'STOP'], health
-          poll = value.get('controlPoll') or {}
-          assert poll.get('status') == 'ANDROID_CONTROL_SIGNAL', poll
-          assert poll.get('action') == 'WAIT', poll
-          assert poll.get('consumedTo') is None, poll
-          print('ANDROID_CONTROL_SIGNAL_V070_PUBLIC_RELAY_VERIFIED')
+
+          value = json.loads(Path('recovery/before-content.json').read_text(encoding='utf-8'))
+          content = value.get('content') or {}
+          files = content.get('files') or []
+          source = ''
+          for item in files:
+              if isinstance(item, dict) and item.get('name') == 'Code' and item.get('type') == 'SERVER_JS':
+                  source = str(item.get('source') or '')
+                  break
+          if not source:
+              raise SystemExit('REMOTE_CODE_FILE_MISSING')
+          match = re.search(r'const ANDROID_BROWSER_DEVICE_KEY_V010 = ("(?:\\.|[^"])*");', source)
+          if not match:
+              raise SystemExit('REMOTE_DEVICE_KEY_MISSING')
+          key = json.loads(match.group(1))
+          if not isinstance(key, str) or len(key) < 16 or len(key.encode('utf-8')) > 300:
+              raise SystemExit('REMOTE_DEVICE_KEY_INVALID')
+          Path('recovery/device-key.txt').write_text(key, encoding='utf-8')
+          Path('recovery/recovery-metadata.json').write_text(json.dumps({
+              'schemaVersion': '1.0.0',
+              'sourceBuildId': '767a7488-b505-40b8-92ad-188aceb50098',
+              'brokerUrl': 'https://script.google.com/macros/s/AKfycbxUD2uI5jrD_IHJSnEmf23Gf37BhaY09aPcxAtIp4H__8C_QKKfUZ_NpR5mi0ZVH--O/exec',
+              'keyLength': len(key),
+              'plaintextUploaded': False,
+          }, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
           PY
 
-      - name: Upload sanitized deployment evidence
-        if: ${{ always() }}
+          openssl pkeyutl -encrypt \
+            -pubin \
+            -inkey recovery/public.pem \
+            -in recovery/device-key.txt \
+            -out recovery/device-key.enc \
+            -pkeyopt rsa_padding_mode:oaep \
+            -pkeyopt rsa_oaep_md:sha256
+          sha256sum recovery/device-key.enc > recovery/device-key.enc.sha256
+          test -s recovery/device-key.enc
+          rm -f recovery/device-key.txt recovery/before-content.json recovery/public.pem
+          test ! -e recovery/device-key.txt
+          test ! -e recovery/before-content.json
+
+      - name: Upload encrypted recovery only
         uses: actions/upload-artifact@v4
         with:
-          name: android-broker-control-signal-v070-${{ github.run_id }}
+          name: android-broker-device-key-encrypted-${{ github.run_id }}
           path: |
-            evidence/control-result.json
-            evidence/build.json
-            evidence/cloudbuild.log
-            evidence/deploy-result.json
-            evidence/validation.log
-            evidence/javascript-syntax.log
-            evidence/combined-source.sha256
-            evidence/deploy.stdout
-            evidence/deploy.stderr
-            evidence/deploy.rc
-            evidence/backup-result.json
-            evidence/trigger.json
-            evidence/trigger-run.json
-            evidence/trigger-run.stderr
-          if-no-files-found: warn
-          retention-days: 2
+            recovery/device-key.enc
+            recovery/device-key.enc.sha256
+            recovery/recovery-metadata.json
+          if-no-files-found: error
+          retention-days: 1
