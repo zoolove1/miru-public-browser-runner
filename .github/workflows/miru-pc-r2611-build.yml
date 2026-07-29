@@ -7,6 +7,11 @@ on:
     paths:
       - '.github/workflows/miru-pc-r2611-build.yml'
       - 'control/miru-pc-r2611-commit.txt'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/miru-pc-r2611-build.yml'
+      - 'control/miru-pc-r2611-commit.txt'
 
 permissions:
   contents: read
@@ -18,7 +23,13 @@ concurrency:
 
 jobs:
   build:
-    if: github.actor == 'zoolove1' && github.ref == 'refs/heads/control/miru-pc-r2611-build-20260729'
+    if: >-
+      github.actor == 'zoolove1' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/control/miru-pc-r2611-build-20260729') ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'control/miru-pc-r2611-build-20260729'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
