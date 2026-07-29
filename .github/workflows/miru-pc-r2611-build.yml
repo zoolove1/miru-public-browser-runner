@@ -1,7 +1,13 @@
 name: MIRU PC R2.6.11 Cloud Build Package
-# synchronized after draft PR creation to force the bounded build-only relay
+# bounded owner-only relay; never merge this workflow
 
 on:
+  push:
+    branches:
+      - control/miru-pc-r2611-build-20260729
+    paths:
+      - '.github/workflows/miru-pc-r2611-build.yml'
+      - 'control/miru-pc-r2611-commit.txt'
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
@@ -20,9 +26,11 @@ jobs:
   build:
     if: >-
       github.actor == 'zoolove1' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.base.ref == 'main' &&
-      github.event.pull_request.head.ref == 'control/miru-pc-r2611-build-20260729'
+      ((github.event_name == 'push' && github.ref == 'refs/heads/control/miru-pc-r2611-build-20260729') ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'control/miru-pc-r2611-build-20260729'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
