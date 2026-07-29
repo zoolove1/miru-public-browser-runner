@@ -1,0 +1,71 @@
+name: MIRU PC R2.6.12.1 Recovery Diagnostics
+
+on:
+  push:
+    branches:
+      - control/miru-pc-r2612-build-20260729
+    paths:
+      - '.github/workflows/miru-pc-r26121-diagnose.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  diagnose:
+    if: github.actor == 'zoolove1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PROJECT_ID: autonomy-system
+      REGION: us-central1
+      WIF_PROVIDER: projects/770537155218/locations/global/workloadIdentityPools/miru-github/providers/miru-public-runner
+      WIF_SERVICE_ACCOUNT: miru-cloud-build@autonomy-system.iam.gserviceaccount.com
+      TRIGGER_NAME: miru-pc-r2612-20260729
+      EXPECTED_COMMIT: af35d050a29c22432d68261101148f658c9e6402
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+      - name: Run exact build and always collect evidence
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p evidence
+          gcloud builds triggers run "${TRIGGER_NAME}" --project="${PROJECT_ID}" --region="${REGION}" --sha="${EXPECTED_COMMIT}" --quiet --format=json > evidence/trigger-run.json 2> evidence/trigger-run.stderr
+          trigger_rc=$?
+          BUILD_ID="$(jq -r '.metadata.build.id // .metadata.buildId // .id // empty' evidence/trigger-run.json 2>/dev/null)"
+          echo "BUILD_ID=${BUILD_ID}"
+          status='TRIGGER_FAILED'
+          if [ "${trigger_rc}" -eq 0 ] && [ -n "${BUILD_ID}" ]; then
+            status='UNKNOWN'
+            for _ in $(seq 1 180); do
+              status="$(gcloud builds describe "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(status)' 2>/dev/null || echo DESCRIBE_FAILED)"
+              case "${status}" in SUCCESS|FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED|DESCRIBE_FAILED) break ;; esac
+              sleep 10
+            done
+            gcloud builds describe "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" --format=json > evidence/build.json 2> evidence/build.stderr || true
+            gcloud builds log "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" > evidence/cloudbuild.log 2>&1 || true
+          fi
+          printf '%s\n' "${status}" > evidence/status.txt
+          echo '--- STATUS ---'
+          cat evidence/status.txt
+          echo '--- CLOUDBUILD LOG TAIL ---'
+          tail -n 250 evidence/cloudbuild.log 2>/dev/null || true
+          test "${status}" = 'SUCCESS'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: miru-pc-r26121-diagnostics-${{ github.run_id }}
+          path: evidence
+          if-no-files-found: warn
+          retention-days: 7
