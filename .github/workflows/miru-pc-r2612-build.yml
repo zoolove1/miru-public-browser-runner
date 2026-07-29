@@ -57,7 +57,7 @@ jobs:
           set -euo pipefail
           private_commit="$(tr -d '\r\n[:space:]' < control/miru-pc-r2612-commit.txt)"
           [[ "${private_commit}" =~ ^[0-9a-f]{40}$ ]]
-          test "${private_commit}" = '20b3fc5307ba1eaae1f0d1221d0cedf03c9d3e34'
+          test "${private_commit}" = '21ce1237bcb323ef4eaffc6f8ee6a3be532fb52b'
           echo "PRIVATE_COMMIT=${private_commit}" >> "${GITHUB_ENV}"
 
       - name: Obtain short-lived Google credentials through WIF
@@ -185,9 +185,16 @@ jobs:
 
           $relay = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\root\Start-MiruContinuousSlidesRelay.ps1')
           $core = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\core\Start-MiruSingleWindowStack.ps1')
-          foreach ($required in @('TargetIntervalMilliseconds = 200', "ImageFormat = 'PNG'", 'SINGLE_IN_FLIGHT_NO_QUEUE', 'original_resolution = $true', 'resampling = $false')) {
-            if ($relay -notlike "*$required*") { throw "Relay contract missing: $required" }
+          $start = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\scripts\Start-MiruStableMode.ps1')
+          foreach ($required in @('TargetIntervalMilliseconds = 200', "ImageFormat = 'PNG'", 'SINGLE_IN_FLIGHT_NO_QUEUE', 'original_resolution = $true', 'resampling = $false', 'PARTIAL_ALLOCATION_DISPOSAL_GUARD')) {
+            if (-not $relay.Contains($required)) { throw "Relay contract missing: $required" }
           }
           if ($relay -match 'DrawImage\s*\(') { throw 'Relay performs forbidden resampling.' }
-          if ($core -notmatch 'RELAY_READY_TIMEOUT' -or $core -match 'SLIDES_RELAY_DEGRADED') { throw 'Core relay fail-closed contract failed.' }
+          foreach ($required in @('RELAY_PRODUCER_CONSUMER_MODE_MATCH', 'ORIGINAL_RESOLUTION_PACED_SINGLE_FLIGHT', 'SLIDES_RELAY_REQUIRED_FILE_MISSING')) {
+            if (-not $core.Contains($required)) { throw "Core relay contract missing: $required" }
+          }
+          if ($core.Contains("[string]`$s.mode -eq 'FOCUS_HIGH_QUALITY_ZERO_DELAY'")) { throw 'Legacy relay readiness mode remains.' }
+          foreach ($required in @('Test-CoreStackR2612Current', 'CORE_STACK_R2612_RESTART_REQUIRED', 'CORE_STACK_R2612_READY_TIMEOUT')) {
+            if (-not $start.Contains($required)) { throw "Live-core upgrade contract missing: $required" }
+          }
           Write-Host 'MIRU_PC_R2612_WINDOWS_E2E=PASS'
