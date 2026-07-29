@@ -1,0 +1,193 @@
+name: MIRU PC R2.6.12 Cloud Build and Windows Validation
+
+on:
+  push:
+    branches:
+      - control/miru-pc-r2612-build-20260729
+    paths:
+      - '.github/workflows/miru-pc-r2612-build.yml'
+      - 'control/miru-pc-r2612-commit.txt'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/miru-pc-r2612-build.yml'
+      - 'control/miru-pc-r2612-commit.txt'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: miru-pc-r2612-build-20260729
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: >-
+      github.actor == 'zoolove1' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/control/miru-pc-r2612-build-20260729') ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'control/miru-pc-r2612-build-20260729'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PROJECT_ID: autonomy-system
+      REGION: us-central1
+      WIF_PROVIDER: projects/770537155218/locations/global/workloadIdentityPools/miru-github/providers/miru-public-runner
+      WIF_SERVICE_ACCOUNT: miru-cloud-build@autonomy-system.iam.gserviceaccount.com
+      BUILD_SERVICE_ACCOUNT: projects/autonomy-system/serviceAccounts/770537155218-compute@developer.gserviceaccount.com
+      CONNECTED_REPOSITORY: projects/autonomy-system/locations/us-central1/connections/miru-private-github/repositories/useful-orbit-automation
+      PRIVATE_BRANCH: repair/miru-pc-r2612-original-relay-20260729
+      BUILD_CONFIG: cloudbuild/miru-pc-r2612-standalone.yaml
+      TRIGGER_NAME: miru-pc-r2612-20260729
+      ARTIFACT_BUCKET: gs://autonomy-system-miru-build-artifacts
+
+    steps:
+      - name: Check out isolated public relay branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate exact private commit marker
+        shell: bash
+        run: |
+          set -euo pipefail
+          private_commit="$(tr -d '\r\n[:space:]' < control/miru-pc-r2612-commit.txt)"
+          [[ "${private_commit}" =~ ^[0-9a-f]{40}$ ]]
+          test "${private_commit}" = '20b3fc5307ba1eaae1f0d1221d0cedf03c9d3e34'
+          echo "PRIVATE_COMMIT=${private_commit}" >> "${GITHUB_ENV}"
+
+      - name: Obtain short-lived Google credentials through WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Install Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Create or validate bounded MIRU PC trigger
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          if ! gcloud builds triggers describe "${TRIGGER_NAME}" --project="${PROJECT_ID}" --region="${REGION}" >/dev/null 2>&1; then
+            gcloud builds triggers create manual \
+              --project="${PROJECT_ID}" \
+              --region="${REGION}" \
+              --name="${TRIGGER_NAME}" \
+              --repository="${CONNECTED_REPOSITORY}" \
+              --branch="${PRIVATE_BRANCH}" \
+              --build-config="${BUILD_CONFIG}" \
+              --service-account="${BUILD_SERVICE_ACCOUNT}" \
+              --no-require-approval
+          fi
+          gcloud builds triggers describe "${TRIGGER_NAME}" --project="${PROJECT_ID}" --region="${REGION}" --format=json > evidence/trigger.json
+          jq -e --arg branch "refs/heads/${PRIVATE_BRANCH}" '.gitFileSource.revision == $branch and .sourceToBuild.ref == $branch' evidence/trigger.json
+          jq -e --arg config "${BUILD_CONFIG}" '.gitFileSource.path == $config' evidence/trigger.json
+
+      - name: Run exact private commit and collect final ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud builds triggers run "${TRIGGER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --sha="${PRIVATE_COMMIT}" \
+            --quiet \
+            --format=json > evidence/trigger-run.json 2> evidence/trigger-run.stderr
+
+          BUILD_ID="$(jq -r '.metadata.build.id // .metadata.buildId // .id // empty' evidence/trigger-run.json)"
+          test -n "${BUILD_ID}"
+          echo "BUILD_ID=${BUILD_ID}" >> "${GITHUB_ENV}"
+
+          status='UNKNOWN'
+          for _ in $(seq 1 180); do
+            status="$(gcloud builds describe "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(status)')"
+            case "${status}" in SUCCESS|FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED) break ;; esac
+            sleep 10
+          done
+
+          gcloud builds describe "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" --format=json > evidence/build.json
+          gcloud builds log "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" > evidence/cloudbuild.log 2>&1 || true
+          jq -n --arg status "${status}" --arg buildId "${BUILD_ID}" --arg commit "${PRIVATE_COMMIT}" \
+            '{status:$status,buildId:$buildId,commit:$commit}' > evidence/control-result.json
+
+          prefix="${ARTIFACT_BUCKET}/miru-pc/r2612/${BUILD_ID}"
+          gcloud storage cp "${prefix}/MIRU_PC_R2.6.12_STANDALONE_FINAL.zip" evidence/MIRU_PC_R2.6.12_STANDALONE_FINAL.zip
+          gcloud storage cp "${prefix}/MIRU_PC_R2.6.12_STANDALONE_FINAL.zip.sha256" evidence/MIRU_PC_R2.6.12_STANDALONE_FINAL.zip.sha256
+          gcloud storage cp "${prefix}/SOURCE_MANIFEST.sha256" evidence/SOURCE_MANIFEST.sha256
+          gcloud storage cp "${prefix}/VALIDATION_REPORT.txt" evidence/VALIDATION_REPORT.txt
+
+          test "${status}" = 'SUCCESS'
+          grep -Fx 'MIRU_PC_R2612_CLOUD_BUILD=PASS' evidence/VALIDATION_REPORT.txt
+          grep -Fx "SOURCE_COMMIT=${PRIVATE_COMMIT}" evidence/VALIDATION_REPORT.txt
+          (cd evidence && sha256sum --check --strict MIRU_PC_R2.6.12_STANDALONE_FINAL.zip.sha256)
+
+      - name: Upload final ZIP and build evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: miru-pc-r2612-final-${{ github.run_id }}
+          path: |
+            evidence/MIRU_PC_R2.6.12_STANDALONE_FINAL.zip
+            evidence/MIRU_PC_R2.6.12_STANDALONE_FINAL.zip.sha256
+            evidence/SOURCE_MANIFEST.sha256
+            evidence/VALIDATION_REPORT.txt
+            evidence/control-result.json
+            evidence/build.json
+            evidence/cloudbuild.log
+            evidence/trigger.json
+            evidence/trigger-run.json
+            evidence/trigger-run.stderr
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-e2e:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download exact Cloud Build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: miru-pc-r2612-final-${{ github.run_id }}
+          path: evidence
+
+      - name: Run Windows static, termination, rollback, and relay contract tests
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:GITHUB_WORKSPACE 'evidence\MIRU_PC_R2.6.12_STANDALONE_FINAL.zip'
+          $extract = Join-Path $env:GITHUB_WORKSPACE 'extracted'
+          Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
+          $patchRoot = Get-ChildItem -LiteralPath $extract -Directory -Recurse |
+            Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName '02_TEST_PATCH_STATIC.cmd') } |
+            Select-Object -First 1 -ExpandProperty FullName
+          if ([string]::IsNullOrWhiteSpace($patchRoot)) { throw 'Patch root not found in final ZIP.' }
+
+          $tests = @(
+            'payload\scripts\Test-MiruPatchStatic.ps1',
+            'payload\scripts\Test-MiruTerminationPropagation.ps1',
+            'payload\scripts\Test-MiruInstallerRollback.ps1'
+          )
+          foreach ($relative in $tests) {
+            $script = Join-Path $patchRoot $relative
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -PatchRoot $patchRoot
+            if ($LASTEXITCODE -ne 0) { throw "Windows validation failed: $relative exit=$LASTEXITCODE" }
+          }
+
+          $relay = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\root\Start-MiruContinuousSlidesRelay.ps1')
+          $core = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\core\Start-MiruSingleWindowStack.ps1')
+          foreach ($required in @('TargetIntervalMilliseconds = 200', "ImageFormat = 'PNG'", 'SINGLE_IN_FLIGHT_NO_QUEUE', 'original_resolution = $true', 'resampling = $false')) {
+            if ($relay -notlike "*$required*") { throw "Relay contract missing: $required" }
+          }
+          if ($relay -match 'DrawImage\s*\(') { throw 'Relay performs forbidden resampling.' }
+          if ($core -notmatch 'RELAY_READY_TIMEOUT' -or $core -match 'SLIDES_RELAY_DEGRADED') { throw 'Core relay fail-closed contract failed.' }
+          Write-Host 'MIRU_PC_R2612_WINDOWS_E2E=PASS'
