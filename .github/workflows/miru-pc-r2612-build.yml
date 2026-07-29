@@ -57,7 +57,7 @@ jobs:
           set -euo pipefail
           private_commit="$(tr -d '\r\n[:space:]' < control/miru-pc-r2612-commit.txt)"
           [[ "${private_commit}" =~ ^[0-9a-f]{40}$ ]]
-          test "${private_commit}" = 'bc13150daca12dae2696fb9883740a7dd3265c1b'
+          test "${private_commit}" = '10e2dce758fff4cf432fea8c7f4fd126e5f7844b'
           echo "PRIVATE_COMMIT=${private_commit}" >> "${GITHUB_ENV}"
 
       - name: Obtain short-lived Google credentials through WIF
@@ -160,10 +160,11 @@ jobs:
           name: miru-pc-r2612-final-${{ github.run_id }}
           path: evidence
 
-      - name: Run Windows static, termination, rollback, and relay contract tests
+      - name: Run Windows static, rollback, relay, and state-schema tests
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
           $zip = Join-Path $env:GITHUB_WORKSPACE 'evidence\MIRU_PC_R2.6.12_STANDALONE_FINAL.zip'
           $extract = Join-Path $env:GITHUB_WORKSPACE 'extracted'
           Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
@@ -186,6 +187,9 @@ jobs:
           $relay = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\root\Start-MiruContinuousSlidesRelay.ps1')
           $core = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\core\Start-MiruSingleWindowStack.ps1')
           $start = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\scripts\Start-MiruStableMode.ps1')
+          $supervisor = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\scripts\Miru-OverlaySupervisor.ps1')
+          $policy = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\config\miru-stable-policy.json') | ConvertFrom-Json
+
           foreach ($required in @('TargetIntervalMilliseconds = 200', "ImageFormat = 'PNG'", 'SINGLE_IN_FLIGHT_NO_QUEUE', 'original_resolution = $true', 'resampling = $false', 'PARTIAL_ALLOCATION_DISPOSAL_GUARD')) {
             if (-not $relay.Contains($required)) { throw "Relay contract missing: $required" }
           }
@@ -193,8 +197,30 @@ jobs:
           foreach ($required in @('RELAY_PRODUCER_CONSUMER_MODE_MATCH', 'ORIGINAL_RESOLUTION_PACED_SINGLE_FLIGHT', 'SLIDES_RELAY_REQUIRED_FILE_MISSING')) {
             if (-not $core.Contains($required)) { throw "Core relay contract missing: $required" }
           }
-          if ($core.Contains("[string]`$s.mode -eq 'FOCUS_HIGH_QUALITY_ZERO_DELAY'")) { throw 'Legacy relay readiness mode remains.' }
-          foreach ($required in @('Test-CoreStackR2612Current', 'CORE_STACK_R2612_RESTART_REQUIRED', 'CORE_STACK_R2612_READY_TIMEOUT')) {
-            if (-not $start.Contains($required)) { throw "Live-core upgrade contract missing: $required" }
+          foreach ($required in @('Test-CoreStackR2612Current', 'CORE_STACK_R2612_RESTART_REQUIRED', 'CORE_STACK_R2612_READY_TIMEOUT', 'STATE_SCHEMA_COMPATIBILITY_R26121', 'core_stack_version=$requiredCoreVersion')) {
+            if (-not $start.Contains($required)) { throw "Stable-start contract missing: $required" }
           }
-          Write-Host 'MIRU_PC_R2612_WINDOWS_E2E=PASS'
+          foreach ($required in @('PRESERVE_CORE_STATE_SCHEMA_R26121', "core_stack_pid = ConvertTo-MiruProcessId (Get-Value `$record 'core_stack_pid')", "core_stack_version = if ((Get-Value `$record 'core_stack_version'))")) {
+            if (-not $supervisor.Contains($required)) { throw "Supervisor schema contract missing: $required" }
+          }
+          if ([string]$policy.patch_version -ne '2.6.12.1') { throw 'Patch version was not advanced to 2.6.12.1.' }
+          if ([string]$policy.core_stack_version -ne '0.9.9.2') { throw 'Policy core_stack_version missing.' }
+
+          $legacy = [pscustomobject]@{ patch_version='2.6.12'; started_at='legacy'; supervisor_pid=1; bridge_pid=2 }
+          foreach ($default in @(
+            [pscustomobject]@{Name='core_stack_pid';Value=0},
+            [pscustomobject]@{Name='core_stack_version';Value='0.9.9.2'},
+            [pscustomobject]@{Name='watchdog_pid';Value=0}
+          )) {
+            if ($null -eq $legacy.PSObject.Properties[$default.Name]) {
+              $legacy | Add-Member -NotePropertyName $default.Name -NotePropertyValue $default.Value
+            }
+          }
+          if ($legacy.core_stack_pid -ne 0 -or $legacy.core_stack_version -ne '0.9.9.2') { throw 'Legacy state migration regression failed.' }
+          $rewritten = [ordered]@{
+            core_stack_pid = [int]$legacy.core_stack_pid
+            core_stack_version = [string]$legacy.core_stack_version
+          }
+          if ($rewritten.core_stack_pid -ne 0 -or $rewritten.core_stack_version -ne '0.9.9.2') { throw 'Supervisor state rewrite regression failed.' }
+
+          Write-Host 'MIRU_PC_R26121_WINDOWS_E2E=PASS'
