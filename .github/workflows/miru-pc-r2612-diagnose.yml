@@ -6,6 +6,10 @@ on:
       - control/miru-pc-r2612-build-20260729
     paths:
       - '.github/workflows/miru-pc-r2612-diagnose.yml'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/miru-pc-r2612-diagnose.yml'
 
 permissions:
   contents: read
@@ -44,6 +48,10 @@ jobs:
           gcloud builds describe "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" --format=json > evidence/build.json
           gcloud builds log "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" > evidence/cloudbuild.log 2>&1 || true
           gcloud builds describe "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(status)' > evidence/status.txt
+          echo '--- CLOUD BUILD STATUS ---'
+          cat evidence/status.txt
+          echo '--- CLOUD BUILD LOG ---'
+          cat evidence/cloudbuild.log
       - uses: actions/upload-artifact@v4
         with:
           name: miru-pc-r2612-failed-build-${{ env.BUILD_ID }}
