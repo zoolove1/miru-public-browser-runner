@@ -1,0 +1,101 @@
+name: Blogger Connection Preflight 20260730
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/blogger-connection-preflight-20260730.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      PROJECT_ID: autonomy-system
+      PROJECT_NUMBER: "770537155218"
+      SECRET_NAME: CLASPRC_JSON
+      WIF_PROVIDER: projects/770537155218/locations/global/workloadIdentityPools/miru-github/providers/miru-public-runner
+      WIF_SERVICE_ACCOUNT: miru-cloud-build@autonomy-system.iam.gserviceaccount.com
+    steps:
+      - name: Authenticate to Google Cloud with WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Run sanitized connection preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+
+          default_sa="$(gcloud builds get-default-service-account --project="${PROJECT_ID}" 2>/dev/null || true)"
+          if [[ -z "${default_sa}" ]]; then
+            default_sa="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+          fi
+
+          api_state="UNKNOWN"
+          if gcloud services list --enabled --project="${PROJECT_ID}" \
+            --filter='config.name=blogger.googleapis.com' \
+            --format='value(config.name)' 2>/dev/null | grep -qx 'blogger.googleapis.com'; then
+            api_state="ENABLED"
+          fi
+
+          describe_state="UNKNOWN"
+          if gcloud secrets describe "${SECRET_NAME}" --project="${PROJECT_ID}" >/dev/null 2>evidence/describe.err; then
+            describe_state="EXISTS_AND_METADATA_READABLE"
+          elif grep -qi 'NOT_FOUND' evidence/describe.err; then
+            describe_state="NOT_FOUND"
+          elif grep -qiE 'PERMISSION_DENIED|does not have permission' evidence/describe.err; then
+            describe_state="METADATA_PERMISSION_DENIED"
+          else
+            describe_state="DESCRIBE_FAILED_OTHER"
+          fi
+
+          access_state="UNKNOWN"
+          if gcloud secrets versions access latest --secret="${SECRET_NAME}" --project="${PROJECT_ID}" >/dev/null 2>evidence/access.err; then
+            access_state="ACCESS_GRANTED"
+          elif grep -qi 'NOT_FOUND' evidence/access.err; then
+            access_state="NOT_FOUND_OR_NO_VERSION"
+          elif grep -qiE 'PERMISSION_DENIED|secretmanager.versions.access|does not have permission' evidence/access.err; then
+            access_state="ACCESS_PERMISSION_DENIED"
+          else
+            access_state="ACCESS_FAILED_OTHER"
+          fi
+
+          python3 - <<'PY'
+          import json, os
+          result = {
+              "projectId": os.environ["PROJECT_ID"],
+              "projectNumber": os.environ["PROJECT_NUMBER"],
+              "bloggerApi": os.environ.get("api_state", "UNKNOWN"),
+              "wifServiceAccount": os.environ["WIF_SERVICE_ACCOUNT"],
+              "defaultCloudBuildServiceAccount": os.environ.get("default_sa", ""),
+              "secretName": os.environ["SECRET_NAME"],
+              "secretMetadata": os.environ.get("describe_state", "UNKNOWN"),
+              "secretPayloadAccessFromWifServiceAccount": os.environ.get("access_state", "UNKNOWN"),
+              "secretPayloadWasPrinted": False,
+              "externalEffects": False,
+          }
+          with open("evidence/result.json", "w", encoding="utf-8") as f:
+              json.dump(result, f, ensure_ascii=False, indent=2)
+          print(json.dumps(result, ensure_ascii=False, indent=2))
+          PY
+        env:
+          api_state: ${{ env.api_state }}
+
+      - name: Upload sanitized evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: blogger-connection-preflight-${{ github.run_id }}
+          path: evidence/result.json
+          if-no-files-found: error
+          retention-days: 7
