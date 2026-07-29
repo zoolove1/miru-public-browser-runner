@@ -211,7 +211,7 @@ function Save-Status([string]$State,[string]$Message,[double]$LastCycleMs,[doubl
 }
 
 try {
-    try{$lockTaken=$mutex.WaitOne(0)}catch[System.Threading.AbandonedMutexException]{$lockTaken=$true}
+    try{$lockTaken=$mutex.WaitOne(0)} catch [System.Threading.AbandonedMutexException] {$lockTaken=$true}
     if(-not $lockTaken){Write-Host 'MIRU_CONTINUOUS_SLIDES_RELAY_ALREADY_RUNNING';exit 0}
     if(-not(Test-Path $configPath)){throw 'slides-bridge-local.json was not found.'}
     $config=Get-Content -Raw $configPath|ConvertFrom-Json
