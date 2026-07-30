@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse, hashlib, shutil, zipfile
 from pathlib import Path
 
-OUTER='MIRU_PC_R2.6.12.3_ACK_SPLIT_TARGETED_SIKCHUNG_WINDOWS_VERIFIED'
+OUTER='MIRU_PC_R2.6.12.3_ACK_SPLIT_TARGETED_SIKCHUNG_WINDOWS_VERIFIED_INSTALLER_FIX'
 PATCH='MIRU_PC_STABILITY_PATCH_R2.6.12.3'
 TARGET=r'C:\Users\sikchung\Downloads\MIRU_PC_COMPLETE\MIRU_PC_COMPLETE_V0970_CLEAN1'
 
@@ -20,7 +20,7 @@ def main():
     cmd=(
         '@echo off\r\nsetlocal\r\n'
         'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0payload\\scripts\\Install-MiruPcStabilityPatch.ps1" '
-        f'-PatchRoot "%~dp0" -TargetRoot "{TARGET}" %*\r\n'
+        f'-TargetRoot "{TARGET}" %*\r\n'
         'set "RC=%ERRORLEVEL%"\r\necho.\r\n'
         'if not "%RC%"=="0" echo Installation failed with exit code %RC%.\r\n'
         'pause\r\nexit /b %RC%\r\n'
