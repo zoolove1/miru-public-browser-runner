@@ -32,21 +32,21 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Build and validate exact installer-fix ZIP
+      - name: Build and validate exact short-path ZIP
         shell: powershell
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File control\r26123\run_windows_validation.ps1
-          if ($LASTEXITCODE -ne 0) { throw "R2.6.12.3 installer-fix validation failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "R2.6.12.3 short-path validation failed: $LASTEXITCODE" }
 
-      - name: Upload exact Windows-verified installer-fix ZIP
+      - name: Upload exact Windows-verified short-path ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: miru-pc-r26123-installer-fix-${{ github.run_id }}
+          name: miru-pc-r26123-short-path-${{ github.run_id }}
           path: |
-            evidence/MIRU_PC_R2.6.12.3_ACK_SPLIT_TARGETED_SIKCHUNG_WINDOWS_VERIFIED_INSTALLER_FIX.zip
-            evidence/MIRU_PC_R2.6.12.3_ACK_SPLIT_TARGETED_SIKCHUNG_WINDOWS_VERIFIED_INSTALLER_FIX.zip.sha256
-            evidence/VALIDATION_REPORT_R26123_INSTALLER_FIX.txt
+            evidence/MIRU_R26123_INSTALLER_FIX2.zip
+            evidence/MIRU_R26123_INSTALLER_FIX2.zip.sha256
+            evidence/VALIDATION_REPORT_R26123_SHORT_PATH.txt
           if-no-files-found: error
           retention-days: 7
