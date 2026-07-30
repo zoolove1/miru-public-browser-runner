@@ -1,0 +1,36 @@
+name: MIRU PC Self-hosted Runner Control
+
+on:
+  issues:
+    types: [edited]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: miru-pc-self-hosted-runner-control
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    if: >-
+      github.event.issue.number == 290 &&
+      github.event.sender.login == 'zoolove1'
+    runs-on: [self-hosted, Windows, X64, miru-pc]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout fixed control plane
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Execute MIRU runner command
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & .\tools\miru_pc_runner_dispatch.ps1 -EventPath $env:GITHUB_EVENT_PATH
+          exit $LASTEXITCODE
