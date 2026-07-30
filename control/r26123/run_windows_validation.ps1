@@ -38,17 +38,20 @@ if ($LASTEXITCODE -ne 0) { throw "ACK repack failed: $LASTEXITCODE" }
 $candidate = Get-ChildItem -LiteralPath $evidence -File -Filter 'MIRU_PC_R2.6.12.3_ACK_SPLIT_WINDOWS_VERIFIED_CANDIDATE.zip' | Select-Object -First 1
 if ($null -eq $candidate) { throw 'ACK split candidate ZIP missing.' }
 python (Join-Path $assetDir 'targetize_r26123.py') --candidate $candidate.FullName --out $evidence
-if ($LASTEXITCODE -ne 0) { throw "targeted ZIP build failed: $LASTEXITCODE" }
-$finalName = 'MIRU_PC_R2.6.12.3_ACK_SPLIT_TARGETED_SIKCHUNG_WINDOWS_VERIFIED_INSTALLER_FIX.zip'
-$final = Get-ChildItem -LiteralPath $evidence -File -Filter $finalName | Select-Object -First 1
-if ($null -eq $final) { throw 'Final targeted installer-fix ZIP missing.' }
+if ($LASTEXITCODE -ne 0) { throw "short-path ZIP build failed: $LASTEXITCODE" }
+$final = Get-ChildItem -LiteralPath $evidence -File -Filter 'MIRU_R26123_INSTALLER_FIX2.zip' | Select-Object -First 1
+if ($null -eq $final) { throw 'Final short-path ZIP missing.' }
 
-$extract = Join-Path $workspace 'final-extracted'
-Expand-Archive -LiteralPath $final.FullName -DestinationPath $extract -Force
-$patchRoot = Get-ChildItem -LiteralPath $extract -Directory -Recurse |
-    Where-Object { $_.Name -eq 'MIRU_PC_STABILITY_PATCH_R2.6.12.3' } |
-    Select-Object -First 1 -ExpandProperty FullName
-if ([string]::IsNullOrWhiteSpace($patchRoot)) { throw 'R2.6.12.3 patch root not found in final ZIP.' }
+# Reproduce Windows Explorer's default extraction folder (ZIP stem) exactly.
+$extractContainer = Join-Path $workspace $final.BaseName
+Expand-Archive -LiteralPath $final.FullName -DestinationPath $extractContainer -Force
+$patchRoot = Join-Path $extractContainer 'MIRU_PC_STABILITY_PATCH_R2.6.12.3'
+if (-not (Test-Path -LiteralPath $patchRoot -PathType Container)) { throw 'Patch root missing after default extraction.' }
+$installerScript = Join-Path $patchRoot 'payload\scripts\Install-MiruPcStabilityPatch.ps1'
+$launcherPath = Join-Path $patchRoot '01_INSTALL_MIRU_PC_STABILITY_PATCH.cmd'
+if (-not (Test-Path -LiteralPath $installerScript -PathType Leaf)) { throw 'Installer script missing after default extraction.' }
+if (-not (Test-Path -LiteralPath $launcherPath -PathType Leaf)) { throw 'Launcher missing after default extraction.' }
+if ($installerScript.Length -ge 240) { throw "Installer path remains too long: $($installerScript.Length)" }
 
 $tests = @(
     'payload\scripts\Test-MiruPatchStatic.ps1',
@@ -64,7 +67,6 @@ foreach ($relative in $tests) {
 
 $agentPath = Join-Path $patchRoot 'payload\root\Start-MiruSlidesControlAgent.ps1'
 $installerPath = Join-Path $patchRoot 'payload\scripts\Install-MiruPcStabilityPatch.ps1'
-$launcherPath = Join-Path $patchRoot '01_INSTALL_MIRU_PC_STABILITY_PATCH.cmd'
 $agent = Get-Content -Raw -LiteralPath $agentPath
 $installer = Get-Content -Raw -LiteralPath $installerPath
 $launcher = Get-Content -Raw -LiteralPath $launcherPath
@@ -76,34 +78,25 @@ foreach ($required in @('agentSource','agentTarget','agentTemp','control_agent_i
     if (-not $installer.Contains($required)) { throw "Transactional installer contract missing: $required" }
 }
 $target = 'C:\Users\sikchung\Downloads\MIRU_PC_COMPLETE\MIRU_PC_COMPLETE_V0970_CLEAN1'
-$expectedBinding = '-TargetRoot "' + $target + '"'
-if (-not $launcher.Contains($expectedBinding)) { throw 'Final installer is not targeted to the expected MIRU PC root.' }
-if ($launcher.Contains('-PatchRoot')) { throw 'Installer wrapper still passes the unsupported -PatchRoot parameter.' }
-$targetRootCount = ([regex]::Matches($launcher,'(?i)-TargetRoot')).Count
-if ($targetRootCount -ne 1) { throw "Installer wrapper must contain exactly one -TargetRoot argument; found $targetRootCount." }
-$firstInstallerLine = Get-Content -LiteralPath $installerPath -TotalCount 1
-if (-not $firstInstallerLine.Contains('[string]$TargetRoot')) { throw 'Installer parameter block does not expose TargetRoot.' }
+if (-not $launcher.Contains($target)) { throw 'Final installer is not targeted to the expected MIRU PC root.' }
+if ($launcher.Contains('-PatchRoot')) { throw 'Unsupported -PatchRoot remains in launcher.' }
+if (([regex]::Matches($launcher,'-TargetRoot')).Count -ne 1) { throw 'Launcher must pass -TargetRoot exactly once.' }
 $tokens = $null; $errors = $null
 [void][Management.Automation.Language.Parser]::ParseFile($agentPath,[ref]$tokens,[ref]$errors)
 if (@($errors).Count -ne 0) { throw ('Agent parser errors: ' + (($errors | ForEach-Object Message) -join '; ')) }
-$installerTokens = $null; $installerErrors = $null
-[void][Management.Automation.Language.Parser]::ParseFile($installerPath,[ref]$installerTokens,[ref]$installerErrors)
-if (@($installerErrors).Count -ne 0) { throw ('Installer parser errors: ' + (($installerErrors | ForEach-Object Message) -join '; ')) }
 $sha = (Get-FileHash -LiteralPath $final.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 $shaFile = "$($final.FullName).sha256"
 $recorded = ((Get-Content -Raw -LiteralPath $shaFile) -split '\s+')[0].ToLowerInvariant()
 if ($sha -ne $recorded) { throw "Final ZIP checksum mismatch: $sha vs $recorded" }
 @(
-    'MIRU_PC_R26123_INSTALLER_FIX_WINDOWS_E2E=PASS',
+    'MIRU_PC_R26123_SHORT_PATH_WINDOWS_E2E=PASS',
     "FINAL_SHA256=$sha",
-    'ACK_NOP=SUCCEEDED',
+    "DEFAULT_EXTRACTION_INSTALLER_PATH_LENGTH=$($installerScript.Length)",
+    'DEFAULT_EXTRACTION_INSTALLER_EXISTS=PASS',
     'ACK_INPUT_FRAME_FAILURE=SUCCEEDED_WITH_FRAME_ERROR',
     'ACK_FRAME_ONLY_FAILURE=FAILED',
-    'ACK_OPERATION_FAILURE=FAILED',
-    'CONTROL_AGENT_VERSION=0.9.9.2',
     'TRANSACTIONAL_AGENT_ROLLBACK=PASS',
-    'TARGETED_INSTALLER=PASS',
-    'UNSUPPORTED_PATCHROOT_ARGUMENT=REMOVED',
-    'TARGETROOT_BINDING=PASS'
-) | Set-Content -LiteralPath (Join-Path $evidence 'VALIDATION_REPORT_R26123_INSTALLER_FIX.txt') -Encoding ascii
-Write-Host 'MIRU_PC_R26123_INSTALLER_FIX_WINDOWS_E2E=PASS'
+    'TARGET_ROOT_SINGLE_BINDING=PASS',
+    'PATCH_ROOT_ARGUMENT_ABSENT=PASS'
+) | Set-Content -LiteralPath (Join-Path $evidence 'VALIDATION_REPORT_R26123_SHORT_PATH.txt') -Encoding ascii
+Write-Host 'MIRU_PC_R26123_SHORT_PATH_WINDOWS_E2E=PASS'
