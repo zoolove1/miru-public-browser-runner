@@ -1,0 +1,94 @@
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+$workspace = $env:GITHUB_WORKSPACE
+$assetDir = Join-Path $workspace 'control\r26123'
+$evidence = Join-Path $workspace 'evidence'
+New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+
+$uri = 'https://api.github.com/repos/zoolove1/miru-public-browser-runner/actions/artifacts/8742968839/zip'
+$artifactZip = Join-Path $workspace 'base-artifact.zip'
+curl.exe -sS -L -H "Authorization: Bearer $env:GITHUB_TOKEN" -H 'Accept: application/vnd.github+json' $uri -o $artifactZip
+if ($LASTEXITCODE -ne 0) { throw "artifact download failed: $LASTEXITCODE" }
+$artifactDir = Join-Path $workspace 'base-artifact'
+Expand-Archive -LiteralPath $artifactZip -DestinationPath $artifactDir -Force
+$baseZip = Get-ChildItem -LiteralPath $artifactDir -File -Recurse |
+    Where-Object { $_.Name -like '*R2.6.12.2*CHANNEL_RECOVERY*.zip' } |
+    Select-Object -First 1
+if ($null -eq $baseZip) { throw 'Verified R2.6.12.2 base ZIP was not found in artifact 8742968839.' }
+
+$agentOut = Join-Path $assetDir 'agent.ps1.gz.b64'
+$parts = @(Get-ChildItem -LiteralPath $assetDir -Filter 'agent.part-*' -File | Sort-Object Name)
+if ($parts.Count -ne 8) { throw "expected 8 agent chunks, got $($parts.Count)" }
+$stream = [IO.File]::Open($agentOut,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::None)
+try {
+    foreach ($part in $parts) {
+        $bytes = [IO.File]::ReadAllBytes($part.FullName)
+        $stream.Write($bytes,0,$bytes.Length)
+    }
+} finally { $stream.Dispose() }
+$actualAsset = (Get-FileHash -LiteralPath $agentOut -Algorithm SHA256).Hash.ToLowerInvariant()
+$expectedAsset = 'b1013aa2c25e5acae3b9fd1ba20dcfe245e94f976c416c79c591fb662a4af9a4'
+if ($actualAsset -ne $expectedAsset) { throw "agent asset checksum mismatch: $actualAsset" }
+
+python (Join-Path $assetDir 'repack_r26123.py') --base-zip $baseZip.FullName --assets $assetDir --out $evidence
+if ($LASTEXITCODE -ne 0) { throw "ACK repack failed: $LASTEXITCODE" }
+$candidate = Get-ChildItem -LiteralPath $evidence -File -Filter 'MIRU_PC_R2.6.12.3_ACK_SPLIT_WINDOWS_VERIFIED_CANDIDATE.zip' | Select-Object -First 1
+if ($null -eq $candidate) { throw 'ACK split candidate ZIP missing.' }
+python (Join-Path $assetDir 'targetize_r26123.py') --candidate $candidate.FullName --out $evidence
+if ($LASTEXITCODE -ne 0) { throw "targeted ZIP build failed: $LASTEXITCODE" }
+$final = Get-ChildItem -LiteralPath $evidence -File -Filter 'MIRU_PC_R2.6.12.3_ACK_SPLIT_TARGETED_SIKCHUNG_WINDOWS_VERIFIED.zip' | Select-Object -First 1
+if ($null -eq $final) { throw 'Final targeted ZIP missing.' }
+
+$extract = Join-Path $workspace 'final-extracted'
+Expand-Archive -LiteralPath $final.FullName -DestinationPath $extract -Force
+$patchRoot = Get-ChildItem -LiteralPath $extract -Directory -Recurse |
+    Where-Object { $_.Name -eq 'MIRU_PC_STABILITY_PATCH_R2.6.12.3' } |
+    Select-Object -First 1 -ExpandProperty FullName
+if ([string]::IsNullOrWhiteSpace($patchRoot)) { throw 'R2.6.12.3 patch root not found in final ZIP.' }
+
+$tests = @(
+    'payload\scripts\Test-MiruPatchStatic.ps1',
+    'payload\scripts\Test-MiruAckSplit.ps1',
+    'payload\scripts\Test-MiruTerminationPropagation.ps1',
+    'payload\scripts\Test-MiruInstallerRollback.ps1'
+)
+foreach ($relative in $tests) {
+    $script = Join-Path $patchRoot $relative
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -PatchRoot $patchRoot
+    if ($LASTEXITCODE -ne 0) { throw "Windows validation failed: $relative exit=$LASTEXITCODE" }
+}
+
+$agentPath = Join-Path $patchRoot 'payload\root\Start-MiruSlidesControlAgent.ps1'
+$installerPath = Join-Path $patchRoot 'payload\scripts\Install-MiruPcStabilityPatch.ps1'
+$launcherPath = Join-Path $patchRoot '01_INSTALL_MIRU_PC_STABILITY_PATCH.cmd'
+$agent = Get-Content -Raw -LiteralPath $agentPath
+$installer = Get-Content -Raw -LiteralPath $installerPath
+$launcher = Get-Content -Raw -LiteralPath $launcherPath
+foreach ($required in @('Get-MiruAckOutcome','Test-FrameDeliveryIsPrimaryOperation','SUCCEEDED_WITH_FRAME_ERROR','overall_status = $State','command_received = $true','operation_status = $OperationStatus','frame_status = $FrameStatus','frame_error = $FrameError','COMMAND_SUCCEEDED_WITH_FRAME_ERROR')) {
+    if (-not $agent.Contains($required)) { throw "ACK contract missing: $required" }
+}
+if ($agent -notmatch "\$AgentVersion\s*=\s*'0\.9\.9\.2'") { throw 'Control agent version is not 0.9.9.2.' }
+foreach ($required in @('agentSource','agentTarget','agentTemp','control_agent_installed = $true','control_agent_version = ''0.9.9.2''','ack_operation_frame_split = $true')) {
+    if (-not $installer.Contains($required)) { throw "Transactional installer contract missing: $required" }
+}
+$target = 'C:\Users\sikchung\Downloads\MIRU_PC_COMPLETE\MIRU_PC_COMPLETE_V0970_CLEAN1'
+if (-not $launcher.Contains($target)) { throw 'Final installer is not targeted to the expected MIRU PC root.' }
+$tokens = $null; $errors = $null
+[void][Management.Automation.Language.Parser]::ParseFile($agentPath,[ref]$tokens,[ref]$errors)
+if (@($errors).Count -ne 0) { throw ('Agent parser errors: ' + (($errors | ForEach-Object Message) -join '; ')) }
+$sha = (Get-FileHash -LiteralPath $final.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+$shaFile = "$($final.FullName).sha256"
+$recorded = ((Get-Content -Raw -LiteralPath $shaFile) -split '\s+')[0].ToLowerInvariant()
+if ($sha -ne $recorded) { throw "Final ZIP checksum mismatch: $sha vs $recorded" }
+@(
+    'MIRU_PC_R26123_WINDOWS_E2E=PASS',
+    "FINAL_SHA256=$sha",
+    'ACK_NOP=SUCCEEDED',
+    'ACK_INPUT_FRAME_FAILURE=SUCCEEDED_WITH_FRAME_ERROR',
+    'ACK_FRAME_ONLY_FAILURE=FAILED',
+    'ACK_OPERATION_FAILURE=FAILED',
+    'CONTROL_AGENT_VERSION=0.9.9.2',
+    'TRANSACTIONAL_AGENT_ROLLBACK=PASS',
+    'TARGETED_INSTALLER=PASS'
+) | Set-Content -LiteralPath (Join-Path $evidence 'VALIDATION_REPORT_R26123.txt') -Encoding ascii
+Write-Host 'MIRU_PC_R26123_WINDOWS_E2E=PASS'
