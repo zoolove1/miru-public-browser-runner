@@ -26,6 +26,14 @@ def main():
         'pause\r\nexit /b %RC%\r\n'
     )
     (patch/'01_INSTALL_MIRU_PC_STABILITY_PATCH.cmd').write_bytes(cmd.encode('ascii'))
+
+    static_path=patch/'payload/scripts/Test-MiruPatchStatic.ps1'
+    static_text=static_path.read_text(encoding='utf-8-sig')
+    bad='@("$AgentVersion = \'0.9.9.2\'",'
+    good="@('$AgentVersion = ''0.9.9.2''',"
+    if static_text.count(bad)!=1: raise SystemExit(f'expected one static quote defect, got {static_text.count(bad)}')
+    static_path.write_text(static_text.replace(bad,good,1),encoding='utf-8-sig',newline='\r\n')
+
     manifest=patch/'MANIFEST.sha256'; lines=[]
     for p in sorted((x for x in patch.rglob('*') if x.is_file() and x != manifest),key=lambda x:x.relative_to(patch).as_posix().lower()):
         lines.append(f'{hashlib.sha256(p.read_bytes()).hexdigest()} *{p.relative_to(patch).as_posix()}')
