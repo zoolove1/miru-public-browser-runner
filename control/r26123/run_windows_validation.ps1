@@ -70,7 +70,7 @@ $launcher = Get-Content -Raw -LiteralPath $launcherPath
 foreach ($required in @('Get-MiruAckOutcome','Test-FrameDeliveryIsPrimaryOperation','SUCCEEDED_WITH_FRAME_ERROR','overall_status = $State','command_received = $true','operation_status = $OperationStatus','frame_status = $FrameStatus','frame_error = $FrameError','COMMAND_SUCCEEDED_WITH_FRAME_ERROR')) {
     if (-not $agent.Contains($required)) { throw "ACK contract missing: $required" }
 }
-if ($agent -notmatch "\$AgentVersion\s*=\s*'0\.9\.9\.2'") { throw 'Control agent version is not 0.9.9.2.' }
+if (-not $agent.Contains('$AgentVersion = ''0.9.9.2''')) { throw 'Control agent version is not 0.9.9.2.' }
 foreach ($required in @('agentSource','agentTarget','agentTemp','control_agent_installed = $true','control_agent_version = ''0.9.9.2''','ack_operation_frame_split = $true')) {
     if (-not $installer.Contains($required)) { throw "Transactional installer contract missing: $required" }
 }
