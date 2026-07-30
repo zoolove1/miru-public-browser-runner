@@ -1,0 +1,66 @@
+name: MIRU PC Self-hosted Runner Windows Validation
+
+on:
+  pull_request:
+    paths:
+      - tools/miru_pc_self_hosted_bootstrap.ps1
+      - tools/miru_pc_runner_dispatch.ps1
+      - .github/workflows/miru-pc-self-hosted-control.yml
+      - .github/workflows/miru-pc-self-hosted-validation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Parse PowerShell and validate contracts
+        shell: powershell
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $bootstrap = '.\tools\miru_pc_self_hosted_bootstrap.ps1'
+          $dispatcher = '.\tools\miru_pc_runner_dispatch.ps1'
+          $control = '.\.github\workflows\miru-pc-self-hosted-control.yml'
+          $validation = '.\.github\workflows\miru-pc-self-hosted-validation.yml'
+
+          foreach ($path in @($bootstrap,$dispatcher)) {
+            $tokens = $null
+            $errors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path),[ref]$tokens,[ref]$errors)
+            if (@($errors).Count -ne 0) {
+              $errors | ForEach-Object { Write-Error $_.Message }
+              throw "PowerShell parser failed: $path"
+            }
+          }
+
+          $bootstrapText = Get-Content -Raw $bootstrap
+          foreach ($required in @('actions/runners/downloads','actions/runners/registration-token','actions/runners/remove-token','sha256_checksum','LOGGED_IN_USER_STARTUP','MIRU_PC_SELF_HOSTED_RUNNER:ONLINE','MIRU_PC_SELF_HOSTED_RUNNER.vbs','--labels','--replace')) {
+            if (-not $bootstrapText.Contains($required)) { throw "Bootstrap contract missing: $required" }
+          }
+          if ($bootstrapText -match '--runasservice|svc\.install|svc\.start') { throw 'Runner must not be installed as a Session 0 service.' }
+
+          $dispatcherText = Get-Content -Raw $dispatcher
+          foreach ($required in @('MIRU-RUNNER/1','DUPLICATE_SKIPPED','control/miru-pc-runner-task-','runner-tasks/','Invoke-Preflight','RUN_TASK','contents/','FromBase64String','MIRU_RUNNER_ACK')) {
+            if (-not $dispatcherText.Contains($required)) { throw "Dispatcher contract missing: $required" }
+          }
+          if ($dispatcherText -match 'git\s+-C.+fetch') { throw 'RUN_TASK must not depend on persisted checkout credentials.' }
+
+          $controlText = Get-Content -Raw $control
+          foreach ($required in @('github.event.issue.number == 290',"github.event.sender.login == 'zoolove1'",'runs-on: [self-hosted, Windows, X64, miru-pc]','persist-credentials: false','GH_TOKEN:','miru_pc_runner_dispatch.ps1')) {
+            if (-not $controlText.Contains($required)) { throw "Control workflow contract missing: $required" }
+          }
+          if ($controlText.Contains('pull_request_target') -or (Get-Content -Raw $validation).Contains('pull_request_target')) { throw 'pull_request_target is forbidden.' }
+
+          $bootstrapHash = (Get-FileHash -Algorithm SHA256 $bootstrap).Hash.ToLowerInvariant()
+          $dispatcherHash = (Get-FileHash -Algorithm SHA256 $dispatcher).Hash.ToLowerInvariant()
+          Write-Host "BOOTSTRAP_SHA256=$bootstrapHash"
+          Write-Host "DISPATCHER_SHA256=$dispatcherHash"
+          Write-Host 'MIRU_PC_SELF_HOSTED_WINDOWS_VALIDATION=PASS'
