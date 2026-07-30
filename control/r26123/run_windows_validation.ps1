@@ -16,19 +16,22 @@ $baseZip = Get-ChildItem -LiteralPath $artifactDir -File -Recurse |
     Select-Object -First 1
 if ($null -eq $baseZip) { throw 'Verified R2.6.12.2 base ZIP was not found in artifact 8742968839.' }
 
-$agentOut = Join-Path $assetDir 'agent.ps1.gz.b64'
-$parts = @(Get-ChildItem -LiteralPath $assetDir -Filter 'agent.part-*' -File | Sort-Object Name)
-if ($parts.Count -ne 8) { throw "expected 8 agent chunks, got $($parts.Count)" }
-$stream = [IO.File]::Open($agentOut,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::None)
-try {
-    foreach ($part in $parts) {
-        $bytes = [IO.File]::ReadAllBytes($part.FullName)
-        $stream.Write($bytes,0,$bytes.Length)
-    }
-} finally { $stream.Dispose() }
-$actualAsset = (Get-FileHash -LiteralPath $agentOut -Algorithm SHA256).Hash.ToLowerInvariant()
-$expectedAsset = 'b1013aa2c25e5acae3b9fd1ba20dcfe245e94f976c416c79c591fb662a4af9a4'
-if ($actualAsset -ne $expectedAsset) { throw "agent asset checksum mismatch: $actualAsset" }
+function Join-AssetParts([string]$Filter,[int]$ExpectedCount,[string]$OutputName,[string]$ExpectedSha256) {
+    $outPath = Join-Path $assetDir $OutputName
+    $parts = @(Get-ChildItem -LiteralPath $assetDir -Filter $Filter -File | Sort-Object Name)
+    if ($parts.Count -ne $ExpectedCount) { throw "expected $ExpectedCount chunks for $Filter, got $($parts.Count)" }
+    $stream = [IO.File]::Open($outPath,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    try {
+        foreach ($part in $parts) {
+            $bytes = [IO.File]::ReadAllBytes($part.FullName)
+            $stream.Write($bytes,0,$bytes.Length)
+        }
+    } finally { $stream.Dispose() }
+    $actual = (Get-FileHash -LiteralPath $outPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $ExpectedSha256) { throw "asset checksum mismatch for $OutputName`: $actual" }
+}
+Join-AssetParts -Filter 'agent.part-*' -ExpectedCount 8 -OutputName 'agent.ps1.gz.b64' -ExpectedSha256 'b1013aa2c25e5acae3b9fd1ba20dcfe245e94f976c416c79c591fb662a4af9a4'
+Join-AssetParts -Filter 'test.part-*' -ExpectedCount 4 -OutputName 'test.ps1.gz.b64' -ExpectedSha256 'f3cd48bbd453bb9ff3945229db8d646c0044ad8374984c72454763e9ba042919'
 
 python (Join-Path $assetDir 'repack_r26123.py') --base-zip $baseZip.FullName --assets $assetDir --out $evidence
 if ($LASTEXITCODE -ne 0) { throw "ACK repack failed: $LASTEXITCODE" }
