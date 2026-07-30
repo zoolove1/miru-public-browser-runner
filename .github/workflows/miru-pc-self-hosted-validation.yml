@@ -57,7 +57,8 @@ jobs:
           foreach ($required in @('github.event.issue.number == 290',"github.event.sender.login == 'zoolove1'",'runs-on: [self-hosted, Windows, X64, miru-pc]','persist-credentials: false','GH_TOKEN:','miru_pc_runner_dispatch.ps1')) {
             if (-not $controlText.Contains($required)) { throw "Control workflow contract missing: $required" }
           }
-          if ($controlText.Contains('pull_request_target') -or (Get-Content -Raw $validation).Contains('pull_request_target')) { throw 'pull_request_target is forbidden.' }
+          $forbiddenEvent = 'pull_' + 'request_target'
+          if ($controlText.Contains($forbiddenEvent) -or (Get-Content -Raw $validation).Contains($forbiddenEvent)) { throw 'Forbidden privileged pull-request event is present.' }
 
           $bootstrapHash = (Get-FileHash -Algorithm SHA256 $bootstrap).Hash.ToLowerInvariant()
           $dispatcherHash = (Get-FileHash -Algorithm SHA256 $dispatcher).Hash.ToLowerInvariant()
