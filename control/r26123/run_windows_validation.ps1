@@ -39,8 +39,9 @@ $candidate = Get-ChildItem -LiteralPath $evidence -File -Filter 'MIRU_PC_R2.6.12
 if ($null -eq $candidate) { throw 'ACK split candidate ZIP missing.' }
 python (Join-Path $assetDir 'targetize_r26123.py') --candidate $candidate.FullName --out $evidence
 if ($LASTEXITCODE -ne 0) { throw "targeted ZIP build failed: $LASTEXITCODE" }
-$final = Get-ChildItem -LiteralPath $evidence -File -Filter 'MIRU_PC_R2.6.12.3_ACK_SPLIT_TARGETED_SIKCHUNG_WINDOWS_VERIFIED.zip' | Select-Object -First 1
-if ($null -eq $final) { throw 'Final targeted ZIP missing.' }
+$finalName = 'MIRU_PC_R2.6.12.3_ACK_SPLIT_TARGETED_SIKCHUNG_WINDOWS_VERIFIED_INSTALLER_FIX.zip'
+$final = Get-ChildItem -LiteralPath $evidence -File -Filter $finalName | Select-Object -First 1
+if ($null -eq $final) { throw 'Final targeted installer-fix ZIP missing.' }
 
 $extract = Join-Path $workspace 'final-extracted'
 Expand-Archive -LiteralPath $final.FullName -DestinationPath $extract -Force
@@ -75,16 +76,25 @@ foreach ($required in @('agentSource','agentTarget','agentTemp','control_agent_i
     if (-not $installer.Contains($required)) { throw "Transactional installer contract missing: $required" }
 }
 $target = 'C:\Users\sikchung\Downloads\MIRU_PC_COMPLETE\MIRU_PC_COMPLETE_V0970_CLEAN1'
-if (-not $launcher.Contains($target)) { throw 'Final installer is not targeted to the expected MIRU PC root.' }
+$expectedBinding = '-TargetRoot "' + $target + '"'
+if (-not $launcher.Contains($expectedBinding)) { throw 'Final installer is not targeted to the expected MIRU PC root.' }
+if ($launcher.Contains('-PatchRoot')) { throw 'Installer wrapper still passes the unsupported -PatchRoot parameter.' }
+$targetRootCount = ([regex]::Matches($launcher,'(?i)-TargetRoot')).Count
+if ($targetRootCount -ne 1) { throw "Installer wrapper must contain exactly one -TargetRoot argument; found $targetRootCount." }
+$firstInstallerLine = Get-Content -LiteralPath $installerPath -TotalCount 1
+if (-not $firstInstallerLine.Contains('[string]$TargetRoot')) { throw 'Installer parameter block does not expose TargetRoot.' }
 $tokens = $null; $errors = $null
 [void][Management.Automation.Language.Parser]::ParseFile($agentPath,[ref]$tokens,[ref]$errors)
 if (@($errors).Count -ne 0) { throw ('Agent parser errors: ' + (($errors | ForEach-Object Message) -join '; ')) }
+$installerTokens = $null; $installerErrors = $null
+[void][Management.Automation.Language.Parser]::ParseFile($installerPath,[ref]$installerTokens,[ref]$installerErrors)
+if (@($installerErrors).Count -ne 0) { throw ('Installer parser errors: ' + (($installerErrors | ForEach-Object Message) -join '; ')) }
 $sha = (Get-FileHash -LiteralPath $final.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 $shaFile = "$($final.FullName).sha256"
 $recorded = ((Get-Content -Raw -LiteralPath $shaFile) -split '\s+')[0].ToLowerInvariant()
 if ($sha -ne $recorded) { throw "Final ZIP checksum mismatch: $sha vs $recorded" }
 @(
-    'MIRU_PC_R26123_WINDOWS_E2E=PASS',
+    'MIRU_PC_R26123_INSTALLER_FIX_WINDOWS_E2E=PASS',
     "FINAL_SHA256=$sha",
     'ACK_NOP=SUCCEEDED',
     'ACK_INPUT_FRAME_FAILURE=SUCCEEDED_WITH_FRAME_ERROR',
@@ -92,6 +102,8 @@ if ($sha -ne $recorded) { throw "Final ZIP checksum mismatch: $sha vs $recorded"
     'ACK_OPERATION_FAILURE=FAILED',
     'CONTROL_AGENT_VERSION=0.9.9.2',
     'TRANSACTIONAL_AGENT_ROLLBACK=PASS',
-    'TARGETED_INSTALLER=PASS'
-) | Set-Content -LiteralPath (Join-Path $evidence 'VALIDATION_REPORT_R26123.txt') -Encoding ascii
-Write-Host 'MIRU_PC_R26123_WINDOWS_E2E=PASS'
+    'TARGETED_INSTALLER=PASS',
+    'UNSUPPORTED_PATCHROOT_ARGUMENT=REMOVED',
+    'TARGETROOT_BINDING=PASS'
+) | Set-Content -LiteralPath (Join-Path $evidence 'VALIDATION_REPORT_R26123_INSTALLER_FIX.txt') -Encoding ascii
+Write-Host 'MIRU_PC_R26123_INSTALLER_FIX_WINDOWS_E2E=PASS'
