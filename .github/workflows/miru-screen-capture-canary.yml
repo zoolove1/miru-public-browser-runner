@@ -6,12 +6,17 @@ on:
     paths:
       - '.github/workflows/miru-screen-capture-canary.yml'
 
+permissions:
+  contents: write
+
 jobs:
   capture:
     runs-on: self-hosted
     timeout-minutes: 5
     steps:
-      - name: Capture primary screen
+      - uses: actions/checkout@v4
+
+      - name: Capture primary screen as compact base64
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -22,25 +27,45 @@ jobs:
           $g = [System.Drawing.Graphics]::FromImage($bmp)
           try {
             $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-            $path = Join-Path $env:RUNNER_TEMP 'miru-current-screen.png'
-            $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
-            [ordered]@{
-              captured_at = (Get-Date).ToString('o')
-              x = $bounds.X
-              y = $bounds.Y
-              width = $bounds.Width
-              height = $bounds.Height
-              path = $path
-            } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'miru-screen-meta.json') -Encoding UTF8
+            $w = 480
+            $h = [int][Math]::Round($bounds.Height * ($w / [double]$bounds.Width))
+            $thumb = New-Object System.Drawing.Bitmap $w, $h
+            $tg = [System.Drawing.Graphics]::FromImage($thumb)
+            $ms = New-Object System.IO.MemoryStream
+            try {
+              $tg.DrawImage($bmp, 0, 0, $w, $h)
+              $codec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' } | Select-Object -First 1
+              $ep = New-Object System.Drawing.Imaging.EncoderParameters 1
+              $ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality), ([long]35)
+              $thumb.Save($ms, $codec, $ep)
+              $obj = [ordered]@{
+                schema = 'MIRU_SCREEN_CAPTURE/1'
+                captured_at = (Get-Date).ToString('o')
+                screen_x = $bounds.X
+                screen_y = $bounds.Y
+                screen_w = $bounds.Width
+                screen_h = $bounds.Height
+                scaled_w = $w
+                scaled_h = $h
+                jpeg_base64 = [Convert]::ToBase64String($ms.ToArray())
+              }
+              New-Item -ItemType Directory -Path 'runtime' -Force | Out-Null
+              $obj | ConvertTo-Json -Compress | Set-Content -LiteralPath 'runtime/miru-screen-capture.json' -Encoding UTF8
+            } finally {
+              $ms.Dispose()
+              $tg.Dispose()
+              $thumb.Dispose()
+            }
           } finally {
             $g.Dispose()
             $bmp.Dispose()
           }
-      - name: Upload screen
-        uses: actions/upload-artifact@v4
-        with:
-          name: miru-current-screen
-          path: |
-            ${{ runner.temp }}/miru-current-screen.png
-            ${{ runner.temp }}/miru-screen-meta.json
-          retention-days: 1
+
+      - name: Commit capture result
+        shell: powershell
+        run: |
+          git config user.name 'miru-screen-canary'
+          git config user.email 'miru-screen-canary@users.noreply.github.com'
+          git add runtime/miru-screen-capture.json
+          git commit -m 'Update MIRU screen capture result' --allow-empty
+          git push
