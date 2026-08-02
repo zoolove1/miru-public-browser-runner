@@ -1,0 +1,52 @@
+name: MIRU PC R2.6.12.3 ACK Split Windows Validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+    paths:
+      - '.github/workflows/miru-pc-r26123-ack-split.yml'
+      - 'control/r26123/**'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: miru-pc-r26123-ack-split-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  windows-ack-split:
+    if: >-
+      github.actor == 'zoolove1' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'control/miru-pc-r26123-ack-split-20260730'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact ACK split branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Build and validate exact short-path ZIP
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File control\r26123\run_windows_validation.ps1
+          if ($LASTEXITCODE -ne 0) { throw "R2.6.12.3 short-path validation failed: $LASTEXITCODE" }
+
+      - name: Upload exact Windows-verified short-path ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: miru-pc-r26123-short-path-${{ github.run_id }}
+          path: |
+            evidence/MIRU_R26123_INSTALLER_FIX2.zip
+            evidence/MIRU_R26123_INSTALLER_FIX2.zip.sha256
+            evidence/VALIDATION_REPORT_R26123_SHORT_PATH.txt
+          if-no-files-found: error
+          retention-days: 7

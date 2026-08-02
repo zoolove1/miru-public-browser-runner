@@ -1,0 +1,145 @@
+name: MIRU PC R2.6.12.2 Channel Recovery Validation
+
+on:
+  push:
+    branches:
+      - control/miru-pc-r2612-build-20260729
+    paths:
+      - '.github/workflows/miru-pc-r26122-channel-recovery.yml'
+      - 'tools/repack_miru_pc_r26122_channel_recovery.py'
+      - 'tools/r26122/Start-MiruContinuousSlidesRelay.ps1'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/miru-pc-r26122-channel-recovery.yml'
+      - 'tools/repack_miru_pc_r26122_channel_recovery.py'
+      - 'tools/r26122/Start-MiruContinuousSlidesRelay.ps1'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: miru-pc-r26122-channel-recovery
+  cancel-in-progress: true
+
+jobs:
+  repack:
+    if: github.actor == 'zoolove1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PROJECT_ID: autonomy-system
+      WIF_PROVIDER: projects/770537155218/locations/global/workloadIdentityPools/miru-github/providers/miru-public-runner
+      WIF_SERVICE_ACCOUNT: miru-cloud-build@autonomy-system.iam.gserviceaccount.com
+      BASE_OBJECT: gs://autonomy-system-miru-build-artifacts/miru-pc/r2612/b59d0d09-4742-46ef-9174-5a0b3d6126f7/MIRU_PC_R2.6.12_STANDALONE_FINAL.zip
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+      - name: Repack exact channel recovery ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          gcloud storage cp "${BASE_OBJECT}" evidence/base-r2612.zip
+          python tools/repack_miru_pc_r26122_channel_recovery.py \
+            evidence/base-r2612.zip \
+            tools/r26122/Start-MiruContinuousSlidesRelay.ps1 \
+            evidence/MIRU_PC_R2.6.12.2_CHANNEL_RECOVERY_WINDOWS_VERIFIED.zip
+          (cd evidence && sha256sum --check MIRU_PC_R2.6.12.2_CHANNEL_RECOVERY_WINDOWS_VERIFIED.zip.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: miru-pc-r26122-channel-recovery-${{ github.run_id }}
+          path: |
+            evidence/MIRU_PC_R2.6.12.2_CHANNEL_RECOVERY_WINDOWS_VERIFIED.zip
+            evidence/MIRU_PC_R2.6.12.2_CHANNEL_RECOVERY_WINDOWS_VERIFIED.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-e2e:
+    needs: repack
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: miru-pc-r26122-channel-recovery-${{ github.run_id }}
+          path: evidence
+      - name: Validate final ZIP and independent channel contracts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $zip = Join-Path $env:GITHUB_WORKSPACE 'evidence\MIRU_PC_R2.6.12.2_CHANNEL_RECOVERY_WINDOWS_VERIFIED.zip'
+          $extract = Join-Path $env:GITHUB_WORKSPACE 'extracted'
+          Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
+          $patchRoot = Get-ChildItem -LiteralPath $extract -Directory -Recurse |
+            Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName '02_TEST_PATCH_STATIC.cmd') } |
+            Select-Object -First 1 -ExpandProperty FullName
+          if ([string]::IsNullOrWhiteSpace($patchRoot)) { throw 'Patch root not found.' }
+
+          $version = (Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'VERSION.txt')).Trim()
+          if ($version -ne '2.6.12.2') { throw "VERSION mismatch: $version" }
+
+          foreach ($relative in @(
+            'payload\scripts\Test-MiruPatchStatic.ps1',
+            'payload\scripts\Test-MiruTerminationPropagation.ps1',
+            'payload\scripts\Test-MiruInstallerRollback.ps1'
+          )) {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $patchRoot $relative) -PatchRoot $patchRoot
+            if ($LASTEXITCODE -ne 0) { throw "Validation failed: $relative exit=$LASTEXITCODE" }
+          }
+
+          $relay = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\root\Start-MiruContinuousSlidesRelay.ps1')
+          $core = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\core\Start-MiruSingleWindowStack.ps1')
+          $start = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\scripts\Start-MiruStableMode.ps1')
+          $policy = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\config\miru-stable-policy.json') | ConvertFrom-Json
+
+          foreach ($required in @(
+            'SLIDES_THUMBNAIL_LATEST_ONLY',
+            'DOWNSCALED_JPEG_THUMBNAIL',
+            "original_frame_route='DRIVE_RAW_FRAME'",
+            'ThumbnailWidth = 640',
+            'JpegQuality = 30',
+            "mime_type='image/jpeg'",
+            'SINGLE_IN_FLIGHT_NO_QUEUE'
+          )) {
+            if (-not $relay.Contains($required)) { throw "Relay contract missing: $required" }
+          }
+          if ($relay.Contains('image/png')) { throw 'Continuous Slides relay still sends PNG.' }
+          if (-not $relay.Contains('DrawImage(')) { throw 'Thumbnail downscale is missing.' }
+
+          foreach ($required in @(
+            'SLIDES_RELAY_CHANNEL_INDEPENDENT_R26122',
+            'READY_WITH_SLIDES_DEGRADED',
+            "foreach (`$key in @('bridge','poller','agent','focus'))",
+            'SLIDES_RELAY_RESTART',
+            'SLIDES_RELAY_RECOVERED',
+            "relay_original_frame_route='DRIVE_RAW_FRAME'"
+          )) {
+            if (-not $core.Contains($required)) { throw "Core independence contract missing: $required" }
+          }
+          if ($core.Contains("foreach (`$key in @('bridge','poller','agent','focus','relay'))")) {
+            throw 'Relay remains an essential-child teardown dependency.'
+          }
+
+          foreach ($required in @('0.9.9.3','READY_WITH_SLIDES_DEGRADED','DRIVE_RAW_FRAME')) {
+            if (-not $start.Contains($required)) { throw "Stable-start contract missing: $required" }
+          }
+          if ([string]$policy.patch_version -ne '2.6.12.2') { throw 'Policy version mismatch.' }
+          if ([string]$policy.core_stack_version -ne '0.9.9.3') { throw 'Core version mismatch.' }
+          if (-not [bool]$policy.slides_relay_channel_independent) { throw 'Policy channel independence missing.' }
+          if ([string]$policy.slides_relay_image_format -ne 'JPEG') { throw 'Policy Slides format mismatch.' }
+          if ([string]$policy.slides_original_frame_route -ne 'DRIVE_RAW_FRAME') { throw 'Policy original frame route mismatch.' }
+
+          Write-Host 'MIRU_PC_R26122_CHANNEL_RECOVERY_WINDOWS_E2E=PASS'
