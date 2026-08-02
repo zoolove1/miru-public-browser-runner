@@ -1,0 +1,149 @@
+name: Signal Agent Minimal v1.1.2 Telemetry Build
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/signal-minimal-v112-build.yml'
+      - 'control/signal-minimal-v112-commit.txt'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: signal-minimal-v112-build-20260731
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: >-
+      github.actor == 'zoolove1' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.ref == 'control/signal-minimal-v112-build-20260731'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PROJECT_ID: autonomy-system
+      REGION: us-central1
+      WIF_PROVIDER: projects/770537155218/locations/global/workloadIdentityPools/miru-github/providers/miru-public-runner
+      WIF_SERVICE_ACCOUNT: miru-cloud-build@autonomy-system.iam.gserviceaccount.com
+      BUILD_SERVICE_ACCOUNT: projects/autonomy-system/serviceAccounts/770537155218-compute@developer.gserviceaccount.com
+      CONNECTED_REPOSITORY: projects/autonomy-system/locations/us-central1/connections/miru-private-github/repositories/useful-orbit-automation
+      PRIVATE_BRANCH: agent/signal-lite-stage-telemetry-v112-20260731
+      BUILD_CONFIG: cloudbuild/signal-agent-minimal-v112.yaml
+      TRIGGER_NAME: signal-minimal-v112-20260731
+      ARTIFACT_BUCKET: gs://autonomy-system-miru-build-artifacts
+
+    steps:
+      - name: Check out isolated public relay branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate exact private commit marker
+        shell: bash
+        run: |
+          set -euo pipefail
+          private_commit="$(tr -d '\r\n[:space:]' < control/signal-minimal-v112-commit.txt)"
+          [[ "${private_commit}" =~ ^[0-9a-f]{40}$ ]]
+          test "${private_commit}" = '939bd72f619bd1ac11a4a6fead81d0d095b788d2'
+          echo "PRIVATE_COMMIT=${private_commit}" >> "${GITHUB_ENV}"
+
+      - name: Obtain short-lived Google credentials through WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Install Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Create or validate bounded telemetry trigger
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          if ! gcloud builds triggers describe "${TRIGGER_NAME}" --project="${PROJECT_ID}" --region="${REGION}" >/dev/null 2>&1; then
+            gcloud builds triggers create manual \
+              --project="${PROJECT_ID}" \
+              --region="${REGION}" \
+              --name="${TRIGGER_NAME}" \
+              --repository="${CONNECTED_REPOSITORY}" \
+              --branch="${PRIVATE_BRANCH}" \
+              --build-config="${BUILD_CONFIG}" \
+              --service-account="${BUILD_SERVICE_ACCOUNT}" \
+              --no-require-approval
+          fi
+          gcloud builds triggers describe "${TRIGGER_NAME}" --project="${PROJECT_ID}" --region="${REGION}" --format=json > evidence/trigger.json
+          jq -e --arg branch "refs/heads/${PRIVATE_BRANCH}" '.gitFileSource.revision == $branch and .sourceToBuild.ref == $branch' evidence/trigger.json
+          jq -e --arg config "${BUILD_CONFIG}" '.gitFileSource.path == $config' evidence/trigger.json
+
+      - name: Run exact private commit and collect APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud builds triggers run "${TRIGGER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --sha="${PRIVATE_COMMIT}" \
+            --quiet \
+            --format=json > evidence/trigger-run.json 2> evidence/trigger-run.stderr
+
+          BUILD_ID="$(jq -r '.metadata.build.id // .metadata.buildId // .id // empty' evidence/trigger-run.json)"
+          test -n "${BUILD_ID}"
+          echo "BUILD_ID=${BUILD_ID}" >> "${GITHUB_ENV}"
+
+          status='UNKNOWN'
+          for _ in $(seq 1 180); do
+            status="$(gcloud builds describe "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(status)')"
+            case "${status}" in SUCCESS|FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED) break ;; esac
+            sleep 10
+          done
+
+          gcloud builds describe "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" --format=json > evidence/build.json
+          gcloud builds log "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" > evidence/cloudbuild.log 2>&1 || true
+          jq -n --arg status "${status}" --arg buildId "${BUILD_ID}" --arg commit "${PRIVATE_COMMIT}" \
+            '{status:$status,buildId:$buildId,commit:$commit}' > evidence/control-result.json
+
+          prefix="${ARTIFACT_BUCKET}/android-agent/signal-minimal-v112/${BUILD_ID}"
+          gcloud storage cp "${prefix}/signal-agent-minimal-v112.log" evidence/signal-agent-minimal-v112.log
+          gcloud storage cp "${prefix}/debug-apk.sha256" evidence/debug-apk.sha256
+          gcloud storage cp "${prefix}/application-id.txt" evidence/application-id.txt
+          gcloud storage cp "${prefix}/MIRU-Signal-Agent-Minimal-v1.1.2-debug.apk" evidence/MIRU-Signal-Agent-Minimal-v1.1.2-debug.apk
+
+          test "${status}" = 'SUCCESS'
+          test -s evidence/signal-agent-minimal-v112.log
+          test -s evidence/debug-apk.sha256
+          test -s evidence/application-id.txt
+          test -s evidence/MIRU-Signal-Agent-Minimal-v1.1.2-debug.apk
+          grep -F 'BUILD SUCCESSFUL' evidence/signal-agent-minimal-v112.log
+          grep -Fx 'com.usefulorbit.browseragent.minimal' evidence/application-id.txt
+          grep -E '^[0-9a-f]{64}  app/build/outputs/apk/debug/app-debug.apk$' evidence/debug-apk.sha256
+          apk_sha="$(awk '{print $1}' evidence/debug-apk.sha256)"
+          echo "${apk_sha}  evidence/MIRU-Signal-Agent-Minimal-v1.1.2-debug.apk" | sha256sum --check --strict
+
+      - name: Upload debug APK and build evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: signal-minimal-v112-debug-apk-${{ github.run_id }}
+          path: |
+            evidence/MIRU-Signal-Agent-Minimal-v1.1.2-debug.apk
+            evidence/control-result.json
+            evidence/build.json
+            evidence/cloudbuild.log
+            evidence/signal-agent-minimal-v112.log
+            evidence/debug-apk.sha256
+            evidence/application-id.txt
+            evidence/trigger.json
+            evidence/trigger-run.json
+            evidence/trigger-run.stderr
+          if-no-files-found: warn
+          retention-days: 7
