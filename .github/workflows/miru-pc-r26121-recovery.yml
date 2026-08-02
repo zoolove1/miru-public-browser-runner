@@ -1,0 +1,166 @@
+name: MIRU PC R2.6.12.1 Recovery Validation
+
+on:
+  push:
+    branches:
+      - control/miru-pc-r2612-build-20260729
+    paths:
+      - '.github/workflows/miru-pc-r26121-recovery.yml'
+      - 'control/miru-pc-r26121-recovery-commit.txt'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/miru-pc-r26121-recovery.yml'
+      - 'control/miru-pc-r26121-recovery-commit.txt'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: miru-pc-r26121-recovery
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: >-
+      github.actor == 'zoolove1' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/control/miru-pc-r2612-build-20260729') ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'control/miru-pc-r2612-build-20260729'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PROJECT_ID: autonomy-system
+      REGION: us-central1
+      WIF_PROVIDER: projects/770537155218/locations/global/workloadIdentityPools/miru-github/providers/miru-public-runner
+      WIF_SERVICE_ACCOUNT: miru-cloud-build@autonomy-system.iam.gserviceaccount.com
+      TRIGGER_NAME: miru-pc-r2612-20260729
+      ARTIFACT_BUCKET: gs://autonomy-system-miru-build-artifacts
+      EXPECTED_COMMIT: af35d050a29c22432d68261101148f658c9e6402
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate exact recovery source
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(tr -d '\r\n[:space:]' < control/miru-pc-r26121-recovery-commit.txt)"
+          test "${actual}" = "${EXPECTED_COMMIT}"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Build exact private recovery commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          gcloud builds triggers run "${TRIGGER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --sha="${EXPECTED_COMMIT}" \
+            --quiet \
+            --format=json > evidence/trigger-run.json
+
+          BUILD_ID="$(jq -r '.metadata.build.id // .metadata.buildId // .id // empty' evidence/trigger-run.json)"
+          test -n "${BUILD_ID}"
+          echo "BUILD_ID=${BUILD_ID}" >> "${GITHUB_ENV}"
+
+          status='UNKNOWN'
+          for _ in $(seq 1 180); do
+            status="$(gcloud builds describe "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(status)')"
+            case "${status}" in SUCCESS|FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED) break ;; esac
+            sleep 10
+          done
+          test "${status}" = 'SUCCESS'
+
+          gcloud builds describe "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" --format=json > evidence/build.json
+          gcloud builds log "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" > evidence/cloudbuild.log 2>&1 || true
+          prefix="${ARTIFACT_BUCKET}/miru-pc/r2612/${BUILD_ID}"
+          gcloud storage cp "${prefix}/MIRU_PC_R2.6.12_STANDALONE_FINAL.zip" evidence/MIRU_PC_R2.6.12.1_RECOVERY.zip
+          gcloud storage cp "${prefix}/VALIDATION_REPORT.txt" evidence/VALIDATION_REPORT.txt
+          grep -Fx "SOURCE_COMMIT=${EXPECTED_COMMIT}" evidence/VALIDATION_REPORT.txt
+          sha256sum evidence/MIRU_PC_R2.6.12.1_RECOVERY.zip > evidence/MIRU_PC_R2.6.12.1_RECOVERY.zip.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: miru-pc-r26121-recovery-${{ github.run_id }}
+          path: evidence
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-e2e:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: miru-pc-r26121-recovery-${{ github.run_id }}
+          path: evidence
+
+      - name: Validate final installable ZIP
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $zip = Join-Path $env:GITHUB_WORKSPACE 'evidence\MIRU_PC_R2.6.12.1_RECOVERY.zip'
+          $extract = Join-Path $env:GITHUB_WORKSPACE 'extracted'
+          Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
+          $patchRoot = Get-ChildItem -LiteralPath $extract -Directory -Recurse |
+            Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName '02_TEST_PATCH_STATIC.cmd') } |
+            Select-Object -First 1 -ExpandProperty FullName
+          if ([string]::IsNullOrWhiteSpace($patchRoot)) { throw 'Patch root not found.' }
+
+          $version = (Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'VERSION.txt')).Trim()
+          if ($version -ne '2.6.12.1') { throw "VERSION mismatch in final ZIP: $version" }
+
+          $static = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\scripts\Test-MiruPatchStatic.ps1')
+          if (-not $static.Contains(".Trim()-ne '2.6.12.1'")) { throw 'Static validator does not require 2.6.12.1.' }
+          if ($static.Contains(".Trim()-ne '2.6.12'")) { throw 'Legacy 2.6.12 version gate remains.' }
+
+          $installer = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\scripts\Install-MiruPcStabilityPatch.ps1')
+          if (-not $installer.Contains("patch_version = '2.6.12.1'")) { throw 'Installer version mismatch.' }
+
+          $policy = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\config\miru-stable-policy.json') | ConvertFrom-Json
+          if ([string]$policy.patch_version -ne '2.6.12.1') { throw 'Policy version mismatch.' }
+          if ([string]$policy.core_stack_version -ne '0.9.9.2') { throw 'Core stack version mismatch.' }
+
+          $tests = @(
+            'payload\scripts\Test-MiruPatchStatic.ps1',
+            'payload\scripts\Test-MiruTerminationPropagation.ps1',
+            'payload\scripts\Test-MiruInstallerRollback.ps1'
+          )
+          foreach ($relative in $tests) {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $patchRoot $relative) -PatchRoot $patchRoot
+            if ($LASTEXITCODE -ne 0) { throw "Windows validation failed: $relative exit=$LASTEXITCODE" }
+          }
+
+          $relay = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\root\Start-MiruContinuousSlidesRelay.ps1')
+          foreach ($required in @('TargetIntervalMilliseconds = 200', "ImageFormat = 'PNG'", 'SINGLE_IN_FLIGHT_NO_QUEUE', 'original_resolution = $true', 'resampling = $false')) {
+            if (-not $relay.Contains($required)) { throw "Relay contract missing: $required" }
+          }
+
+          $start = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\scripts\Start-MiruStableMode.ps1')
+          $supervisor = Get-Content -Raw -LiteralPath (Join-Path $patchRoot 'payload\scripts\Miru-OverlaySupervisor.ps1')
+          foreach ($required in @('STATE_SCHEMA_COMPATIBILITY_R26121', 'core_stack_version=$requiredCoreVersion')) {
+            if (-not $start.Contains($required)) { throw "Start contract missing: $required" }
+          }
+          if (-not $supervisor.Contains('PRESERVE_CORE_STATE_SCHEMA_R26121')) { throw 'Supervisor schema preservation missing.' }
+
+          Write-Host 'MIRU_PC_R26121_RECOVERY_WINDOWS_E2E=PASS'
